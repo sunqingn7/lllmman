@@ -1,2 +1,4 @@
 docs/plans/*.md
 session-*.md
+target/debug/
+target/release/

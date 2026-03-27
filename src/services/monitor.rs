@@ -48,8 +48,11 @@ pub struct ServerStats {
 pub fn fetch_server_stats(host: &str, port: u16) -> Option<ServerStats> {
     let url = format!("http://{}:{}/stats", host, port);
 
-    match reqwest::blocking::get(&url).ok()?.json::<ServerStats>() {
-        Ok(stats) => Some(stats),
-        Err(_) => None,
+    // Check for HTTP errors before parsing
+    let response = reqwest::blocking::get(&url).ok()?;
+    if !response.status().is_success() {
+        return None;
     }
+
+    response.json::<ServerStats>().ok()
 }

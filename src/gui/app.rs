@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use crate::core::{LlmProvider, ModelInfo, ProviderConfig, ProviderRegistry, ServerController};
-use crate::models::{AppSettings, GpuInfo, MonitorStats};
+use crate::models::{AppSettings, GpuInfo};
 use crate::services::{config_persistence, get_system_stats, gpu_detector};
 
 pub fn run() {
@@ -62,7 +62,6 @@ impl App {
             show_download: false,
             show_gpu_settings: false,
             show_plugin_config: false,
-            monitor_stats: MonitorStats::default(),
             search_query: String::new(),
             available_providers,
         }

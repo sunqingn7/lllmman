@@ -48,18 +48,36 @@ impl ServerController {
             });
         }
 
+        if let Some(stderr) = child.stderr.take() {
+            let reader = BufReader::new(stderr);
+            std::thread::spawn(move || {
+                for line in reader.lines().flatten() {
+                    log::error!("server error: {}", line);
+                }
+            });
+        }
+
         *self.status.lock().unwrap() = ServerStatus::Starting;
         self.process = Some(child);
 
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        // Wait for server to start with timeout (up to 10 seconds, checking every 200ms)
+        let start_time = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(10);
 
-        if self.is_running() {
-            *self.status.lock().unwrap() = ServerStatus::Running;
-            Ok(())
-        } else {
-            *self.status.lock().unwrap() = ServerStatus::Error("Server failed to start".into());
-            Err(ProviderError::ServerError("Server failed to start".into()))
+        while start_time.elapsed() < timeout {
+            if self.is_running() {
+                *self.status.lock().unwrap() = ServerStatus::Running;
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
+
+        // Server failed to start within timeout
+        *self.status.lock().unwrap() =
+            ServerStatus::Error("Server failed to start within timeout".into());
+        Err(ProviderError::ServerError(
+            "Server failed to start within timeout".into(),
+        ))
     }
 
     pub fn stop(&mut self) -> Result<()> {
@@ -80,7 +98,16 @@ impl ServerController {
             .is_none()
     }
 
-    pub fn get_status(&self) -> ServerStatus {
-        self.status.lock().unwrap().clone()
+    pub fn get_status(&mut self) -> ServerStatus {
+        let stored_status = self.status.lock().unwrap().clone();
+
+        // If status says Running, verify process is actually alive
+        if matches!(stored_status, ServerStatus::Running) {
+            if !self.is_running() {
+                return ServerStatus::Error("Server crashed".into());
+            }
+        }
+
+        stored_status
     }
 }

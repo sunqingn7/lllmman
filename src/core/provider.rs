@@ -6,8 +6,6 @@ use crate::models::ModelType;
 
 #[derive(Error, Debug)]
 pub enum ProviderError {
-    #[error("Provider not found: {0}")]
-    NotFound(String),
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
     #[error("Server error: {0}")]

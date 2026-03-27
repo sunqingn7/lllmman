@@ -51,6 +51,13 @@ impl LlmProvider for LlamaCppProvider {
             )));
         }
 
+        if !path.is_file() {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Model path is not a file: {}",
+                config.model_path
+            )));
+        }
+
         Ok(())
     }
 
