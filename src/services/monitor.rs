@@ -1,4 +1,5 @@
 use crate::models::MonitorStats;
+use crate::providers::llama_cpp::read_gguf_n_layer;
 use crate::services::gpu_detector;
 
 pub fn get_system_stats() -> MonitorStats {
@@ -48,11 +49,54 @@ pub struct ServerStats {
 pub fn fetch_server_stats(host: &str, port: u16) -> Option<ServerStats> {
     let url = format!("http://{}:{}/stats", host, port);
 
-    // Check for HTTP errors before parsing
+    // First check if server is ready with a simple GET
+    let check_url = format!("http://{}:{}/", host, port);
+    if let Ok(response) = reqwest::blocking::get(&check_url) {
+        if !response.status().is_success() {
+            return None;
+        }
+    } else {
+        // Server not responding
+        return None;
+    }
+
+    // Now fetch stats
     let response = reqwest::blocking::get(&url).ok()?;
     if !response.status().is_success() {
         return None;
     }
 
     response.json::<ServerStats>().ok()
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ServerProps {
+    pub model_path: Option<String>,
+}
+
+pub fn get_server_model_path(host: &str, port: u16) -> Option<String> {
+    let url = format!("http://{}:{}/props", host, port);
+    let response = reqwest::blocking::get(&url).ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let props: ServerProps = response.json().ok()?;
+    props.model_path
+}
+
+pub fn get_actual_gpu_layers(host: &str, port: u16, requested_layers: i32) -> i32 {
+    // If requested_layers != -1, just return it
+    if requested_layers != -1 {
+        return requested_layers;
+    }
+
+    // If -1, try to get actual layer count from GGUF
+    if let Some(model_path) = get_server_model_path(host, port) {
+        if let Some(n_layer) = read_gguf_n_layer(&model_path) {
+            return n_layer as i32;
+        }
+    }
+
+    // Fallback to -1
+    -1
 }

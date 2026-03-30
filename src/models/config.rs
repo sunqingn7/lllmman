@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -57,7 +59,10 @@ impl Default for AppSettings {
         let home = dirs::home_dir().unwrap_or_default();
         Self {
             scan_directories: vec![],
-            download_directory: home.join(".cache/lllmman/models").to_string_lossy().to_string(),
+            download_directory: home
+                .join(".cache/lllmman/models")
+                .to_string_lossy()
+                .to_string(),
             default_port: 8080,
             default_context_size: 4096,
             default_batch_size: 512,
@@ -67,6 +72,41 @@ impl Default for AppSettings {
             default_cache_type_v: "q4_0".to_string(),
             gpu_strategy: GpuAllocation::All,
             selected_provider: "llama.cpp".to_string(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+pub struct ModelConfigs {
+    pub configs: HashMap<String, ModelConfigEntry>,
+    pub last_model_path: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ModelConfigEntry {
+    pub context_size: u32,
+    pub batch_size: u32,
+    pub gpu_layers: i32,
+    pub threads: u32,
+    pub port: u16,
+    pub host: String,
+    pub cache_type_k: String,
+    pub cache_type_v: String,
+    pub num_prompt_tracking: u32,
+}
+
+impl Default for ModelConfigEntry {
+    fn default() -> Self {
+        Self {
+            context_size: 4096,
+            batch_size: 512,
+            gpu_layers: -1,
+            threads: 8,
+            port: 8080,
+            host: "0.0.0.0".to_string(),
+            cache_type_k: "q4_0".to_string(),
+            cache_type_v: "q4_0".to_string(),
+            num_prompt_tracking: 1,
         }
     }
 }

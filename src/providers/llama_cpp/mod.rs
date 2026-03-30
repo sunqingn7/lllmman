@@ -1,11 +1,11 @@
 pub mod provider;
 
-pub use provider::LlamaCppProvider;
+pub use provider::{read_gguf_n_layer, LlamaCppProvider};
 
-use std::sync::Arc;
-use once_cell::sync::Lazy;
 use crate::core::LlmProvider;
 use crate::register_provider;
+use once_cell::sync::Lazy;
+use std::sync::Arc;
 
 static LLAMA_CPP: Lazy<Arc<LlamaCppProvider>> = Lazy::new(|| Arc::new(LlamaCppProvider::new()));
 

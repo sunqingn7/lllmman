@@ -1,8 +1,18 @@
 use eframe::egui;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 
-use crate::core::{LlmProvider, ModelInfo, ProviderConfig, ProviderRegistry, ServerController};
+use crate::core::{
+    DownloadStatus, DownloadTask, LlmProvider, ModelInfo, ModelSource, ProviderConfig, ProviderRegistry,
+    ServerController,
+};
 use crate::models::{AppSettings, GpuInfo};
-use crate::services::{config_persistence, get_system_stats, gpu_detector};
+use crate::services::{
+    config_persistence, get_system_stats, gpu_detector,
+    DownloadManager, DirectUrlDownloader, GitHubReleaseDownloader, HuggingFaceDownloader,
+    detect_running_servers, parse_server_args, get_actual_gpu_layers,
+    save_model_config, load_model_config, get_fallback_config,
+};
 
 pub fn run() {
     let options = eframe::NativeOptions::default();
@@ -22,6 +32,15 @@ pub struct App {
     show_plugin_config: bool,
     search_query: String,
     available_providers: Vec<(&'static str, &'static str)>,
+    download_manager: Arc<RwLock<DownloadManager>>,
+    search_results: Arc<RwLock<Vec<crate::core::DownloadableModel>>>,
+    download_source_type: String,
+    download_url: String,
+    download_github_owner: String,
+    download_github_repo: String,
+    is_searching: bool,
+    is_downloading: bool,
+    frame_counter: u32,
 }
 
 impl App {
@@ -41,13 +60,71 @@ impl App {
             std::sync::Arc::new(p) as std::sync::Arc<dyn LlmProvider>
         });
 
-        let server_config = provider.get_config_template();
+        let mut server_config = provider.get_config_template();
+        server_config.parse_additional_args();
+
+        // Detect running servers and populate config
+        let running_servers = detect_running_servers();
+        for server in &running_servers {
+            if server.provider_id == selected_provider {
+                log::info!("Detected running {} server (PID {}): {}", server.binary, server.pid, server.command_line);
+                let detected_config = parse_server_args(&server.provider_id, &server.command_line);
+                
+                // Merge detected config (always use detected values when external server is found)
+                if !detected_config.model_path.is_empty() {
+                    server_config.model_path = detected_config.model_path;
+                }
+                if detected_config.context_size != 4096 {
+                    server_config.context_size = detected_config.context_size;
+                }
+                if detected_config.batch_size != 512 {
+                    server_config.batch_size = detected_config.batch_size;
+                }
+                if detected_config.port != 8080 {
+                    server_config.port = detected_config.port;
+                }
+                if !detected_config.host.is_empty() {
+                    server_config.host = detected_config.host;
+                }
+                if detected_config.gpu_layers != -1 {
+                    server_config.gpu_layers = detected_config.gpu_layers;
+                }
+                if detected_config.threads != 8 {
+                    server_config.threads = detected_config.threads;
+                }
+                
+                // If gpu_layers is -1, try to get actual layer count from server
+                if server_config.gpu_layers == -1 {
+                    let actual_layers = get_actual_gpu_layers(
+                        &server_config.host,
+                        server_config.port,
+                        server_config.gpu_layers,
+                    );
+                    if actual_layers != -1 {
+                        server_config.gpu_layers = actual_layers;
+                    }
+                }
+                
+                break;
+            }
+        }
 
         let mut models = Vec::new();
+
+        // Scan user-configured directories first
         for dir in &settings.scan_directories {
             let found = provider.scan_models(dir);
             models.extend(found);
         }
+
+        // Scan provider-specific default directories
+        let provider_dirs = provider.default_model_directories();
+        for dir in &provider_dirs {
+            let found = provider.scan_models(dir);
+            models.extend(found);
+        }
+
+        let download_manager = Arc::new(RwLock::new(DownloadManager::new(settings.download_directory.clone())));
 
         Self {
             models,
@@ -64,6 +141,15 @@ impl App {
             show_plugin_config: false,
             search_query: String::new(),
             available_providers,
+            download_manager,
+            search_results: Arc::new(RwLock::new(Vec::new())),
+            download_source_type: "HuggingFace".to_string(),
+            download_url: String::new(),
+            download_github_owner: String::new(),
+            download_github_repo: String::new(),
+            is_searching: false,
+            is_downloading: false,
+            frame_counter: 0,
         }
     }
 
@@ -83,6 +169,9 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Periodically refresh external server detection
+        self.server_controller.refresh_external_detection();
+
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("LLLMMan");
@@ -111,8 +200,8 @@ impl eframe::App for App {
                 ui.label(format!("CPU: {:.1}%", stats.cpu_percent));
                 ui.separator();
 
-                // Try to fetch server stats if server is running
-                if self.server_controller.get_status() == crate::models::ServerStatus::Running {
+                // Try to fetch server stats if server is running (throttled to every ~5 seconds: 60fps * 5 = 300 frames)
+                if self.server_controller.get_status() == crate::models::ServerStatus::Running && self.frame_counter % 300 == 0 {
                     if let Some(server_stats) = crate::services::fetch_server_stats(
                         &self.server_config.host,
                         self.server_config.port,
@@ -126,6 +215,8 @@ impl eframe::App for App {
                         ui.label(format!("Queue: {}", server_stats.queue_size.unwrap_or(0)));
                     }
                 }
+                
+                self.frame_counter = self.frame_counter.wrapping_add(1);
             });
         });
 
@@ -159,8 +250,31 @@ impl eframe::App for App {
                         for (i, model) in filtered.iter().enumerate() {
                             let is_selected = self.selected_model == Some(i);
                             if ui.selectable_label(is_selected, &model.name).clicked() {
+                                // Save current model's config before switching
+                                if let Some(old_i) = self.selected_model {
+                                    if let Some(old_model) = filtered.get(old_i) {
+                                        save_model_config(&old_model.path, &self.server_config).ok();
+                                    }
+                                }
+                                
                                 self.selected_model = Some(i);
                                 self.server_config.model_path = model.path.clone();
+                                
+                                // Load config for new model or fallback to last config
+                                if let Some(config) = load_model_config(&model.path) {
+                                    self.server_config = config;
+                                    self.server_config.model_path = model.path.clone();
+                                } else if let Some(fallback) = get_fallback_config() {
+                                    self.server_config.context_size = fallback.context_size;
+                                    self.server_config.batch_size = fallback.batch_size;
+                                    self.server_config.gpu_layers = fallback.gpu_layers;
+                                    self.server_config.threads = fallback.threads;
+                                    self.server_config.port = fallback.port;
+                                    self.server_config.host = fallback.host;
+                                    self.server_config.cache_type_k = fallback.cache_type_k;
+                                    self.server_config.cache_type_v = fallback.cache_type_v;
+                                    self.server_config.num_prompt_tracking = fallback.num_prompt_tracking;
+                                }
                             }
                         }
                     });
@@ -207,7 +321,7 @@ impl eframe::App for App {
                     ui.label("Context Size:");
                     ui.add(
                         egui::DragValue::new(&mut self.server_config.context_size)
-                            .clamp_range(256..=128000),
+                            .clamp_range(256..=2097152),
                     );
                     ui.end_row();
 
@@ -219,7 +333,9 @@ impl eframe::App for App {
                     ui.end_row();
 
                     ui.label("GPU Layers:");
-                    ui.add(egui::DragValue::new(&mut self.server_config.gpu_layers));
+                    let mut gpu_layers_value = self.server_config.gpu_layers;
+                    ui.add(egui::DragValue::new(&mut gpu_layers_value));
+                    self.server_config.gpu_layers = gpu_layers_value;
                     ui.end_row();
 
                     ui.label("Threads:");
@@ -284,11 +400,19 @@ impl eframe::App for App {
                     match status {
                         crate::models::ServerStatus::Running => {
                             if ui.button("Stop Server").clicked() {
+                                // Save config before stopping
+                                if !self.server_config.model_path.is_empty() {
+                                    save_model_config(&self.server_config.model_path, &self.server_config).ok();
+                                }
                                 self.server_controller.stop().ok();
                             }
                         }
                         _ => {
                             if ui.button("Start Server").clicked() {
+                                // Save config before starting
+                                if !self.server_config.model_path.is_empty() {
+                                    save_model_config(&self.server_config.model_path, &self.server_config).ok();
+                                }
                                 let provider = self.get_current_provider();
                                 self.server_controller
                                     .start(&provider, &self.server_config)
@@ -313,29 +437,45 @@ impl eframe::App for App {
                     ui.separator();
 
                     for opt in &options {
+                        let current_value = self.server_config.get_option(&opt.id)
+                            .unwrap_or_else(|| opt.default_value.clone());
+                        
                         ui.label(&opt.description);
                         match &opt.value_type {
                             crate::core::OptionValueType::String => {
-                                ui.text_edit_singleline(&mut self.server_config.additional_args);
+                                let mut value = current_value;
+                                if ui.text_edit_singleline(&mut value).changed() {
+                                    self.server_config.set_option(&opt.id, value);
+                                }
                             }
                             crate::core::OptionValueType::Number => {
-                                // handled elsewhere
+                                let mut value: i64 = current_value.parse().unwrap_or(0);
+                                if ui.add(egui::DragValue::new(&mut value)).changed() {
+                                    self.server_config.set_option(&opt.id, value.to_string());
+                                }
                             }
                             crate::core::OptionValueType::Bool => {
-                                // handled elsewhere
+                                let mut value = current_value == "true";
+                                if ui.checkbox(&mut value, &opt.name).changed() {
+                                    self.server_config.set_option(&opt.id, value.to_string());
+                                }
                             }
                             crate::core::OptionValueType::Select(values) => {
+                                let mut value = current_value.clone();
                                 egui::ComboBox::from_id_source(&opt.id)
-                                    .selected_text(&self.server_config.additional_args)
+                                    .selected_text(&value)
                                     .show_ui(ui, |ui| {
                                         for v in values {
                                             ui.selectable_value(
-                                                &mut self.server_config.additional_args,
+                                                &mut value,
                                                 v.clone(),
                                                 v,
                                             );
                                         }
                                     });
+                                if value != current_value {
+                                    self.server_config.set_option(&opt.id, value);
+                                }
                             }
                         }
                         ui.end_row();
@@ -343,7 +483,10 @@ impl eframe::App for App {
 
                     ui.separator();
                     ui.label("Additional CLI Args (space-separated):");
-                    ui.text_edit_singleline(&mut self.server_config.additional_args);
+                    let mut raw_args = self.server_config.additional_args.clone();
+                    if ui.text_edit_singleline(&mut raw_args).changed() {
+                        self.server_config.additional_args = raw_args;
+                    }
                     ui.small("Examples: --flash-attention --no-mmap");
                 });
         }
@@ -431,31 +574,187 @@ impl eframe::App for App {
         if self.show_download {
             egui::Window::new("Download Model")
                 .open(&mut self.show_download)
-                .default_width(500.0)
-                .default_height(400.0)
+                .default_width(600.0)
+                .default_height(500.0)
                 .show(ctx, |ui| {
-                    ui.heading("Download Model from HuggingFace");
+                    ui.heading("Download Model");
                     ui.separator();
 
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.search_query)
-                                .hint_text("Search for models..."),
-                        );
-                        if ui.button("Search").clicked() {
-                            // Search functionality would go here
-                            ui.label("Search functionality coming soon...");
+                    ui.label("Source:");
+                    egui::ComboBox::from_id_source("download_source")
+                        .selected_text(&self.download_source_type)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.download_source_type, "HuggingFace".to_string(), "HuggingFace");
+                            ui.selectable_value(&mut self.download_source_type, "Direct URL".to_string(), "Direct URL");
+                            ui.selectable_value(&mut self.download_source_type, "GitHub Release".to_string(), "GitHub Release");
+                        });
+
+                    ui.separator();
+
+                    match self.download_source_type.as_str() {
+                        "HuggingFace" => {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.search_query)
+                                        .hint_text("Search models..."),
+                                );
+                                if ui.button("Search").clicked() && !self.search_query.is_empty() {
+                                    self.is_searching = true;
+                                    let query = self.search_query.clone();
+                                    let search_results = self.search_results.clone();
+                                    let app_handle = ctx.clone();
+                                    tokio::spawn(async move {
+                                        let downloader = HuggingFaceDownloader::new();
+                                        match downloader.search(&query).await {
+                                            Ok(results) => {
+                                                let mut results_lock = search_results.write().await;
+                                                *results_lock = results;
+                                            }
+                                            Err(e) => {
+                                                log::error!("Search failed: {}", e);
+                                            }
+                                        }
+                                        app_handle.request_repaint();
+                                    });
+                                }
+                            });
+
+                            ui.separator();
+
+                            // Display search results
+                            let search_results_ref = self.search_results.clone();
+                            let results_guard = search_results_ref.blocking_read();
+                            if !results_guard.is_empty() {
+                                ui.label("Search Results:");
+                                egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                                    for result in results_guard.iter() {
+                                        if ui.button(&result.name).clicked() {
+                                            self.download_url = result.id.clone();
+                                        }
+                                    }
+                                });
+                            }
+
+                            ui.separator();
+                            ui.label("Or enter model ID directly:");
+                            ui.text_edit_singleline(&mut self.download_url);
+                            ui.label("Example: TheBloke/Mistral-7B-Instruct-v0.1-GGUF");
+
+                            if ui.button("Start Download").clicked() && !self.download_url.is_empty() {
+                                let model_id = self.download_url.clone();
+                                let manager = self.download_manager.clone();
+                                
+                                tokio::spawn(async move {
+                                    let downloader = HuggingFaceDownloader::new();
+                                    match downloader.list_files(&model_id).await {
+                                        Ok(files) => {
+                                            for file in files {
+                                                let source = ModelSource::HuggingFace { repo_id: model_id.clone() };
+                                                let id = manager.write().await.add_task(source, file.path.clone()).await;
+                                                // TODO: Start actual download with progress
+                                                log::info!("Added download task: {}", id);
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to list files: {}", e);
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        "Direct URL" => {
+                            ui.label("Enter direct download URL:");
+                            ui.text_edit_singleline(&mut self.download_url);
+                            
+                            if ui.button("Start Download").clicked() && !self.download_url.is_empty() {
+                                let url = self.download_url.clone();
+                                let manager = self.download_manager.clone();
+                                
+                                tokio::spawn(async move {
+                                    let downloader = DirectUrlDownloader::new();
+                                    match downloader.fetch_headers(&url).await {
+                                        Ok(headers) => {
+                                            let file_name = headers.file_name.clone();
+                                            let content_length = headers.content_length;
+                                            let source = ModelSource::DirectUrl { url: url.clone() };
+                                            let _id = manager.write().await.add_task(source, file_name.clone()).await;
+                                            log::info!("Started download: {} ({} bytes)", file_name, content_length);
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to fetch headers: {}", e);
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        "GitHub Release" => {
+                            ui.horizontal(|ui| {
+                                ui.label("Owner:");
+                                ui.text_edit_singleline(&mut self.download_github_owner);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Repository:");
+                                ui.text_edit_singleline(&mut self.download_github_repo);
+                            });
+                            
+                            if ui.button("Fetch Release").clicked() && !self.download_github_owner.is_empty() && !self.download_github_repo.is_empty() {
+                                let owner = self.download_github_owner.clone();
+                                let repo = self.download_github_repo.clone();
+                                let manager = self.download_manager.clone();
+                                
+                                tokio::spawn(async move {
+                                    let downloader = GitHubReleaseDownloader::new();
+                                    match downloader.get_latest_release(&owner, &repo).await {
+                                        Ok(release) => {
+                                            log::info!("Found release: {} with {} assets", release.tag, release.assets.len());
+                                            for asset in release.assets {
+                                                let source = ModelSource::GitHubRelease {
+                                                    owner: owner.clone(),
+                                                    repo: repo.clone(),
+                                                    tag: release.tag.clone(),
+                                                    asset_name: asset.name.clone(),
+                                                };
+                                                let _id = manager.write().await.add_task(source, asset.name).await;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to fetch release: {}", e);
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+
+                    ui.separator();
+                    ui.heading("Download Queue");
+                    
+                    let manager = self.download_manager.clone();
+                    let tasks = manager.blocking_read().get_tasks_sync();
+                    
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for task in &tasks {
+                            ui.horizontal(|ui| {
+                                ui.label(&task.file_name);
+                                ui.separator();
+                                match &task.status {
+                                    crate::core::DownloadStatus::Pending => ui.label("Pending"),
+                                    crate::core::DownloadStatus::Downloading => {
+                                        let progress = if task.total_bytes > 0 {
+                                            task.downloaded_bytes as f32 / task.total_bytes as f32
+                                        } else {
+                                            0.0
+                                        };
+                                        ui.add(egui::ProgressBar::new(progress).text(&format!("{:.1}%", progress * 100.0)))
+                                    }
+                                    crate::core::DownloadStatus::Completed => ui.label("Completed"),
+                                    crate::core::DownloadStatus::Failed(e) => ui.label(format!("Failed: {}", e)),
+                                    crate::core::DownloadStatus::Cancelled => ui.label("Cancelled"),
+                                }
+                            });
                         }
                     });
-
-                    ui.separator();
-
-                    ui.label("Enter a model URL or ID to download:");
-                    ui.text_edit_multiline(&mut String::new());
-
-                    ui.separator();
-                    ui.small("Note: Full download functionality coming soon.");
-                    ui.small("For now, please download GGUF models manually from HuggingFace.");
                 });
         }
 

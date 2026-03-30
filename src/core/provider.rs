@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::Command;
 use thiserror::Error;
 
@@ -12,6 +13,10 @@ pub enum ProviderError {
     ServerError(String),
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+    #[error("Download error: {0}")]
+    DownloadError(String),
+    #[error("Network error: {0}")]
+    NetworkError(String),
 }
 
 pub type Result<T> = std::result::Result<T, ProviderError>;
@@ -31,6 +36,43 @@ pub struct DownloadableModel {
     pub name: String,
     pub size_gb: f32,
     pub downloads: u32,
+    pub source: ModelSource,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum ModelSource {
+    HuggingFace {
+        repo_id: String,
+    },
+    DirectUrl {
+        url: String,
+    },
+    GitHubRelease {
+        owner: String,
+        repo: String,
+        tag: String,
+        asset_name: String,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DownloadTask {
+    pub id: String,
+    pub source: ModelSource,
+    pub file_name: String,
+    pub dest_path: String,
+    pub status: DownloadStatus,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum DownloadStatus {
+    Pending,
+    Downloading,
+    Completed,
+    Failed(String),
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -38,11 +80,12 @@ pub struct ProviderConfig {
     pub model_path: String,
     pub context_size: u32,
     pub batch_size: u32,
-    pub gpu_layers: u32,
+    pub gpu_layers: i32,
     pub threads: u32,
     pub host: String,
     pub port: u16,
     pub additional_args: String,
+    pub parsed_options: HashMap<String, String>,
     pub cache_type_k: String,
     pub cache_type_v: String,
     pub num_prompt_tracking: u32,
@@ -55,15 +98,60 @@ impl Default for ProviderConfig {
             model_path: String::new(),
             context_size: 4096,
             batch_size: 512,
-            gpu_layers: 35,
+            gpu_layers: -1,
             threads: 8,
             host: "0.0.0.0".to_string(),
             port: 8080,
             additional_args: String::new(),
+            parsed_options: HashMap::new(),
             cache_type_k: "q4_0".to_string(),
             cache_type_v: "q4_0".to_string(),
             num_prompt_tracking: 1,
             gpu_allocation: crate::models::GpuAllocation::All,
+        }
+    }
+}
+
+impl ProviderConfig {
+    pub fn parse_additional_args(&mut self) {
+        if self.additional_args.is_empty() {
+            return;
+        }
+
+        let mut args = self.additional_args.split_whitespace();
+        while let Some(key) = args.next() {
+            let key = key.trim_start_matches('-');
+            if let Some(value) = args.next() {
+                if !value.starts_with('-') {
+                    self.parsed_options
+                        .insert(key.to_string(), value.to_string());
+                }
+            }
+        }
+    }
+
+    pub fn serialize_options_to_args(&mut self) {
+        if self.parsed_options.is_empty() {
+            self.additional_args.clear();
+            return;
+        }
+
+        let mut args = Vec::new();
+        for (key, value) in &self.parsed_options {
+            args.push(format!("--{} {}", key, value));
+        }
+        self.additional_args = args.join(" ");
+    }
+
+    pub fn get_option(&self, key: &str) -> Option<String> {
+        self.parsed_options.get(key).cloned()
+    }
+
+    pub fn set_option(&mut self, key: &str, value: String) {
+        if value.is_empty() {
+            self.parsed_options.remove(key);
+        } else {
+            self.parsed_options.insert(key.to_string(), value);
         }
     }
 }
@@ -111,6 +199,10 @@ pub trait LlmProvider: Send + Sync {
             default_value: String::new(),
             description: "Additional command-line arguments (space-separated)".to_string(),
         }]
+    }
+
+    fn default_model_directories(&self) -> Vec<String> {
+        vec![]
     }
 }
 
