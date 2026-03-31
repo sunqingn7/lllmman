@@ -1,5 +1,6 @@
-use crate::core::ProviderConfig;
+use crate::core::{ProviderConfig, ProviderSettings};
 use crate::models::{AppSettings, ModelConfigEntry, ModelConfigs};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -19,6 +20,15 @@ fn get_model_configs_path() -> PathBuf {
 
     fs::create_dir_all(&config_dir).ok();
     config_dir.join("model_configs.json")
+}
+
+fn get_provider_settings_path() -> PathBuf {
+    let config_dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("lllmman");
+
+    fs::create_dir_all(&config_dir).ok();
+    config_dir.join("provider_settings.json")
 }
 
 pub fn load_settings() -> AppSettings {
@@ -127,4 +137,38 @@ pub fn get_fallback_config() -> Option<ProviderConfig> {
     }
 
     None
+}
+
+pub fn load_provider_settings() -> HashMap<String, ProviderSettings> {
+    let path = get_provider_settings_path();
+
+    if path.exists() {
+        if let Ok(content) = fs::read_to_string(&path) {
+            if let Ok(settings) = serde_json::from_str(&content) {
+                return settings;
+            }
+        }
+    }
+
+    HashMap::new()
+}
+
+pub fn save_provider_settings(settings: &HashMap<String, ProviderSettings>) -> Result<(), String> {
+    let path = get_provider_settings_path();
+    let content = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    fs::write(path, content).map_err(|e| e.to_string())
+}
+
+pub fn load_provider_settings_for(provider_id: &str) -> ProviderSettings {
+    let all = load_provider_settings();
+    all.get(provider_id).cloned().unwrap_or_default()
+}
+
+pub fn save_provider_settings_for(
+    provider_id: &str,
+    settings: &ProviderSettings,
+) -> Result<(), String> {
+    let mut all = load_provider_settings();
+    all.insert(provider_id.to_string(), settings.clone());
+    save_provider_settings(&all)
 }

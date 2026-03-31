@@ -1,7 +1,8 @@
-use std::io::Read;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
-use crate::core::{LlmProvider, ModelInfo, ProviderConfig, ProviderError, Result};
+use crate::core::{
+    DetectedServer, LlmProvider, ModelInfo, ProviderConfig, ProviderError, ProviderSettings, Result,
+};
 use crate::models::ModelType;
 
 pub struct LlamaCppProvider {
@@ -62,32 +63,103 @@ impl LlmProvider for LlamaCppProvider {
         Ok(())
     }
 
-    fn build_start_command(&self, config: &ProviderConfig) -> Command {
-        let mut cmd = Command::new("llama-server");
+    fn default_settings(&self) -> ProviderSettings {
+        ProviderSettings {
+            binary_path: "llama-server".to_string(),
+            env_script: String::new(),
+            additional_args: String::new(),
+        }
+    }
 
-        cmd.arg("-m").arg(&config.model_path);
-        cmd.arg("-c").arg(config.context_size.to_string());
-        cmd.arg("-b").arg(config.batch_size.to_string());
-        cmd.arg("-ngl").arg(config.gpu_layers.to_string());
-        cmd.arg("-t").arg(config.threads.to_string());
-        cmd.arg("--port").arg(config.port.to_string());
-        cmd.arg("--host").arg(&config.host);
-        cmd.arg("-np").arg(config.num_prompt_tracking.to_string());
+    fn start_server(
+        &self,
+        config: &ProviderConfig,
+        settings: &ProviderSettings,
+    ) -> Result<std::process::Child> {
+        let binary = if settings.binary_path.is_empty() {
+            "llama-server"
+        } else {
+            &settings.binary_path
+        };
+
+        if settings.env_script.is_empty() {
+            let mut cmd = Command::new(binary);
+            cmd.arg("-m").arg(&config.model_path);
+            cmd.arg("-c").arg(config.context_size.to_string());
+            cmd.arg("-b").arg(config.batch_size.to_string());
+            cmd.arg("-ngl").arg(config.gpu_layers.to_string());
+            cmd.arg("-t").arg(config.threads.to_string());
+            cmd.arg("--port").arg(config.port.to_string());
+            cmd.arg("--host").arg(&config.host);
+            cmd.arg("-np").arg(config.num_prompt_tracking.to_string());
+
+            if !config.cache_type_k.is_empty() {
+                cmd.arg("--cache-type-k").arg(&config.cache_type_k);
+            }
+            if !config.cache_type_v.is_empty() {
+                cmd.arg("--cache-type-v").arg(&config.cache_type_v);
+            }
+
+            for arg in config.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.arg(arg);
+                }
+            }
+
+            for arg in settings.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.arg(arg);
+                }
+            }
+
+            cmd.stdin(Stdio::null());
+            cmd.stdout(Stdio::piped());
+            cmd.stderr(Stdio::piped());
+
+            return cmd.spawn().map_err(ProviderError::from);
+        }
+
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c");
+
+        let mut script = String::new();
+        script.push_str(&format!("source \"{}\"\n", settings.env_script));
+        script.push_str("exec ");
+        script.push_str(&format!("\"{}\" ", binary));
+        script.push_str(&format!("-m \"{}\" ", config.model_path));
+        script.push_str(&format!("-c {} ", config.context_size));
+        script.push_str(&format!("-b {} ", config.batch_size));
+        script.push_str(&format!("-ngl {} ", config.gpu_layers));
+        script.push_str(&format!("-t {} ", config.threads));
+        script.push_str(&format!("--port {} ", config.port));
+        script.push_str(&format!("--host {} ", config.host));
+        script.push_str(&format!("-np {} ", config.num_prompt_tracking));
 
         if !config.cache_type_k.is_empty() {
-            cmd.arg("--cache-type-k").arg(&config.cache_type_k);
+            script.push_str(&format!("--cache-type-k \"{}\" ", config.cache_type_k));
         }
         if !config.cache_type_v.is_empty() {
-            cmd.arg("--cache-type-v").arg(&config.cache_type_v);
+            script.push_str(&format!("--cache-type-v \"{}\" ", config.cache_type_v));
         }
 
         for arg in config.additional_args.split_whitespace() {
             if !arg.is_empty() {
-                cmd.arg(arg);
+                script.push_str(&format!("{} ", arg));
             }
         }
 
-        cmd
+        for arg in settings.additional_args.split_whitespace() {
+            if !arg.is_empty() {
+                script.push_str(&format!("{} ", arg));
+            }
+        }
+
+        cmd.arg(script);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        cmd.spawn().map_err(ProviderError::from)
     }
 
     fn supported_quantizations(&self) -> Vec<&'static str> {
@@ -139,7 +211,6 @@ impl LlmProvider for LlamaCppProvider {
     fn default_model_directories(&self) -> Vec<String> {
         let mut dirs = Vec::new();
 
-        // ~/.cache/llama.cpp/ - common location for llama.cpp models
         if let Some(home) = dirs::cache_dir() {
             let llama_cpp_dir = home.join("llama.cpp");
             if llama_cpp_dir.exists() {
@@ -147,7 +218,6 @@ impl LlmProvider for LlamaCppProvider {
             }
         }
 
-        // ~/.cache/huggingface/hub/ - HuggingFace cache (where GGUF models are often downloaded)
         if let Some(home) = dirs::cache_dir() {
             let hf_cache = home.join("huggingface").join("hub");
             if hf_cache.exists() {
@@ -155,7 +225,6 @@ impl LlmProvider for LlamaCppProvider {
             }
         }
 
-        // ~/models/ - generic models directory
         if let Some(home) = dirs::home_dir() {
             let models_dir = home.join("models");
             if models_dir.exists() {
@@ -164,6 +233,128 @@ impl LlmProvider for LlamaCppProvider {
         }
 
         dirs
+    }
+
+    fn detect_running_servers(&self) -> Vec<DetectedServer> {
+        let mut servers = Vec::new();
+
+        if let Ok(output) = Command::new("pgrep").args(["-a", "llama-server"]).output() {
+            let output_str = String::from_utf8_lossy(&output.stdout);
+            for line in output_str.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                if let Some(space_pos) = line.find(' ') {
+                    let pid_str = &line[..space_pos];
+                    let cmdline = &line[space_pos + 1..];
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        servers.push(DetectedServer {
+                            pid,
+                            binary: "llama-server".to_string(),
+                            command_line: cmdline.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        servers
+    }
+
+    fn parse_server_config(&self, cmd_line: &str) -> ProviderConfig {
+        let mut config = ProviderConfig::default();
+
+        let args: Vec<&str> = cmd_line.split_whitespace().collect();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = args[i];
+
+            match arg {
+                "-m" | "--model" => {
+                    if i + 1 < args.len() {
+                        config.model_path = args[i + 1].to_string();
+                        i += 1;
+                    }
+                }
+                "-hf" => {
+                    if i + 1 < args.len() {
+                        config.model_path = args[i + 1].to_string();
+                        i += 1;
+                    }
+                }
+                "-c" | "--ctx-size" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse() {
+                            config.context_size = val;
+                        }
+                        i += 1;
+                    }
+                }
+                "-b" | "--batch-size" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse() {
+                            config.batch_size = val;
+                        }
+                        i += 1;
+                    }
+                }
+                "-ngl" | "--n-gpu-layers" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<i32>() {
+                            config.gpu_layers = val;
+                        }
+                        i += 1;
+                    }
+                }
+                "-t" | "--threads" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse() {
+                            config.threads = val;
+                        }
+                        i += 1;
+                    }
+                }
+                "--port" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse() {
+                            config.port = val;
+                        }
+                        i += 1;
+                    }
+                }
+                "--host" => {
+                    if i + 1 < args.len() {
+                        config.host = args[i + 1].to_string();
+                        i += 1;
+                    }
+                }
+                "-np" | "--parallel" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse() {
+                            config.num_prompt_tracking = val;
+                        }
+                        i += 1;
+                    }
+                }
+                "--cache-type-k" => {
+                    if i + 1 < args.len() {
+                        config.cache_type_k = args[i + 1].to_string();
+                        i += 1;
+                    }
+                }
+                "--cache-type-v" => {
+                    if i + 1 < args.len() {
+                        config.cache_type_v = args[i + 1].to_string();
+                        i += 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        config
     }
 }
 
@@ -263,7 +454,6 @@ pub fn read_gguf_n_layer(path: &str) -> Option<u32> {
         ]);
         offset += 4;
 
-        // Check for block_count
         if key.ends_with(".block_count") {
             if val_type == 4 {
                 if offset + 4 <= data.len() {
@@ -278,7 +468,6 @@ pub fn read_gguf_n_layer(path: &str) -> Option<u32> {
             }
         }
 
-        // Skip value
         match val_type {
             0 | 1 => {
                 offset += 1;

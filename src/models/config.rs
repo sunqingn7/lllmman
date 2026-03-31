@@ -29,7 +29,7 @@ pub struct MonitorStats {
     pub cpu_percent: f32,
     pub tokens_per_second: f32,
     pub active_connections: u32,
-    pub gpu_temperatures: Vec<(u32, String, Option<u32>)>,
+    pub gpu_temperatures: Vec<crate::models::GpuTemperature>,
     pub cpu_temperature: Option<f32>,
 }
 

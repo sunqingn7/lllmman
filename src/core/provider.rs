@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::process::Command;
 use thiserror::Error;
 
 use crate::models::ModelType;
@@ -20,6 +19,13 @@ pub enum ProviderError {
 }
 
 pub type Result<T> = std::result::Result<T, ProviderError>;
+
+#[derive(Clone, Debug)]
+pub struct DetectedServer {
+    pub pid: u32,
+    pub binary: String,
+    pub command_line: String,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelInfo {
@@ -73,6 +79,23 @@ pub enum DownloadStatus {
     Completed,
     Failed(String),
     Cancelled,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ProviderSettings {
+    pub binary_path: String,
+    pub env_script: String,
+    pub additional_args: String,
+}
+
+impl Default for ProviderSettings {
+    fn default() -> Self {
+        Self {
+            binary_path: String::new(),
+            env_script: String::new(),
+            additional_args: String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -180,7 +203,12 @@ pub trait LlmProvider: Send + Sync {
     fn get_config_template(&self) -> ProviderConfig;
     fn validate_config(&self, config: &ProviderConfig) -> Result<()>;
 
-    fn build_start_command(&self, config: &ProviderConfig) -> Command;
+    fn default_settings(&self) -> ProviderSettings;
+    fn start_server(
+        &self,
+        config: &ProviderConfig,
+        settings: &ProviderSettings,
+    ) -> Result<std::process::Child>;
 
     fn get_metrics_endpoint(&self, config: &ProviderConfig) -> Option<String> {
         Some(format!("http://{}:{}/stats", config.host, config.port))
@@ -204,6 +232,9 @@ pub trait LlmProvider: Send + Sync {
     fn default_model_directories(&self) -> Vec<String> {
         vec![]
     }
+
+    fn detect_running_servers(&self) -> Vec<DetectedServer>;
+    fn parse_server_config(&self, cmd_line: &str) -> ProviderConfig;
 }
 
 pub trait ModelDownloader: Send + Sync {

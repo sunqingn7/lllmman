@@ -1,0 +1,418 @@
+use std::fs;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use crate::core::{
+    DetectedServer, LlmProvider, ModelInfo, ProviderConfig, ProviderError, ProviderSettings, Result,
+};
+use crate::models::ModelType;
+
+pub struct VllmProvider {
+    id: &'static str,
+    name: &'static str,
+}
+
+impl VllmProvider {
+    pub fn new() -> Self {
+        Self {
+            id: "vllm",
+            name: "vLLM",
+        }
+    }
+}
+
+impl Default for VllmProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl LlmProvider for VllmProvider {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn id(&self) -> &'static str {
+        self.id
+    }
+
+    fn get_config_template(&self) -> ProviderConfig {
+        ProviderConfig {
+            gpu_layers: 90,
+            cache_type_k: String::new(),
+            cache_type_v: String::new(),
+            num_prompt_tracking: 0,
+            ..ProviderConfig::default()
+        }
+    }
+
+    fn validate_config(&self, config: &ProviderConfig) -> Result<()> {
+        if config.model_path.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Model path or HuggingFace model ID is required".into(),
+            ));
+        }
+
+        if config.model_path.contains('/') {
+            let path = Path::new(&config.model_path);
+            if path.exists() && !path.is_dir() {
+                return Err(ProviderError::InvalidConfig(
+                    "Model path must be a directory for vLLM".into(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn default_settings(&self) -> ProviderSettings {
+        ProviderSettings {
+            binary_path: "vllm".to_string(),
+            env_script: String::new(),
+            additional_args: String::new(),
+        }
+    }
+
+    fn start_server(
+        &self,
+        config: &ProviderConfig,
+        settings: &ProviderSettings,
+    ) -> Result<std::process::Child> {
+        let binary = if settings.binary_path.is_empty() {
+            "vllm"
+        } else {
+            &settings.binary_path
+        };
+
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c");
+
+        let mut script = String::new();
+        if !settings.env_script.is_empty() {
+            script.push_str(&format!("source \"{}\"\n", settings.env_script));
+        }
+        script.push_str("exec ");
+        script.push_str(&format!("\"{}\" serve ", binary));
+
+        if config.model_path.contains('/') && Path::new(&config.model_path).exists() {
+            script.push_str(&format!("\"{}\" ", config.model_path));
+        } else {
+            script.push_str(&format!("{} ", config.model_path));
+        }
+
+        script.push_str(&format!("--max-model-len {} ", config.context_size));
+        script.push_str(&format!("--port {} ", config.port));
+        script.push_str(&format!("--host {} ", config.host));
+
+        if config.gpu_layers > 0 {
+            script.push_str(&format!(
+                "--gpu-memory-utilization {:.2} ",
+                config.gpu_layers as f32 / 100.0
+            ));
+        }
+
+        if config.threads > 0 {
+            script.push_str(&format!("--max-num-seqs {} ", config.threads));
+        }
+
+        if config.batch_size > 0 {
+            script.push_str(&format!("--max-num-batched-tokens {} ", config.batch_size));
+        }
+
+        if !config.additional_args.is_empty() {
+            for arg in config.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    script.push_str(&format!("{} ", arg));
+                }
+            }
+        }
+
+        if !settings.additional_args.is_empty() {
+            for arg in settings.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    script.push_str(&format!("{} ", arg));
+                }
+            }
+        }
+
+        log::info!("Starting vLLM: {}", script);
+
+        cmd.arg(script);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+
+        cmd.spawn().map_err(ProviderError::from)
+    }
+
+    fn supported_quantizations(&self) -> Vec<&'static str> {
+        vec![
+            "fp16",
+            "fp8",
+            "int8",
+            "int4",
+            "awq",
+            "gptq",
+            "squeezellm",
+            "marlin",
+        ]
+    }
+
+    fn scan_models(&self, path: &str) -> Vec<ModelInfo> {
+        let mut models = Vec::new();
+
+        let path_obj = Path::new(path);
+        if !path_obj.exists() || !path_obj.is_dir() {
+            return models;
+        }
+
+        if let Ok(entries) = std::fs::read_dir(path_obj) {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    if let Some(model) = parse_hf_model_dir(&entry_path) {
+                        models.push(model);
+                    }
+                }
+            }
+        }
+
+        models
+    }
+
+    fn add_model(&self, path: &str) -> Result<ModelInfo> {
+        if path.is_empty() {
+            return Err(ProviderError::InvalidConfig("Model ID is required".into()));
+        }
+
+        let name = path.split('/').last().unwrap_or(path).to_string();
+        let size_gb = if Path::new(path).exists() {
+            calculate_dir_size(path)
+        } else {
+            0.0
+        };
+
+        Ok(ModelInfo {
+            path: path.to_string(),
+            name,
+            size_gb,
+            quantization: "unknown".to_string(),
+            model_type: ModelType::TextOnly,
+        })
+    }
+
+    fn default_model_directories(&self) -> Vec<String> {
+        let mut dirs = Vec::new();
+
+        if let Some(cache) = dirs::cache_dir() {
+            let hf_hub = cache.join("huggingface").join("hub");
+            if hf_hub.exists() {
+                dirs.push(hf_hub.to_string_lossy().to_string());
+            }
+        }
+
+        if let Some(home) = dirs::home_dir() {
+            let models_dir = home.join("models");
+            if models_dir.exists() {
+                dirs.push(models_dir.to_string_lossy().to_string());
+            }
+        }
+
+        dirs
+    }
+
+    fn detect_running_servers(&self) -> Vec<DetectedServer> {
+        let mut servers = Vec::new();
+
+        if let Ok(output) = Command::new("pgrep").args(["-a", "vllm"]).output() {
+            let output_str = String::from_utf8_lossy(&output.stdout);
+            for line in output_str.lines() {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                let lower = line.to_lowercase();
+                if !lower.contains("serve") {
+                    continue;
+                }
+                if let Some(space_pos) = line.find(' ') {
+                    let pid_str = &line[..space_pos];
+                    let cmdline = &line[space_pos + 1..];
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        servers.push(DetectedServer {
+                            pid,
+                            binary: "vllm".to_string(),
+                            command_line: cmdline.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+
+        servers
+    }
+
+    fn parse_server_config(&self, cmd_line: &str) -> ProviderConfig {
+        let mut config = ProviderConfig::default();
+
+        let args: Vec<&str> = cmd_line.split_whitespace().collect();
+        let mut i = 0;
+
+        while i < args.len() {
+            let arg = args[i];
+
+            match arg {
+                "serve" => {
+                    if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                        config.model_path = args[i + 1].to_string();
+                        i += 1;
+                    }
+                }
+                "--model" => {
+                    if i + 1 < args.len() {
+                        config.model_path = args[i + 1].to_string();
+                        i += 1;
+                    }
+                }
+                "--max-model-len" | "--context-len" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse() {
+                            config.context_size = val;
+                        }
+                        i += 1;
+                    }
+                }
+                "--max-num-batched-tokens" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse() {
+                            config.batch_size = val;
+                        }
+                        i += 1;
+                    }
+                }
+                "--gpu-memory-utilization" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.gpu_layers = (val * 100.0) as i32;
+                        }
+                        i += 1;
+                    }
+                }
+                "--max-num-seqs" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse() {
+                            config.threads = val;
+                        }
+                        i += 1;
+                    }
+                }
+                "--host" => {
+                    if i + 1 < args.len() {
+                        config.host = args[i + 1].to_string();
+                        i += 1;
+                    }
+                }
+                "--port" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<u32>() {
+                            config.port = val as u16;
+                        }
+                        i += 1;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+
+        config
+    }
+}
+
+fn parse_hf_model_dir(path: &Path) -> Option<ModelInfo> {
+    let dir_name = path.file_name()?.to_string_lossy().to_string();
+
+    if !dir_name.contains("models--") {
+        return None;
+    }
+
+    let repo_id = dir_name.strip_prefix("models--")?;
+    let name = repo_id.replace("--", "/");
+
+    let size_gb = calculate_dir_size(&path.to_string_lossy());
+
+    let quantization = detect_quantization(path);
+
+    Some(ModelInfo {
+        path: name.clone(),
+        name,
+        size_gb: (size_gb * 100.0).round() / 100.0,
+        quantization,
+        model_type: ModelType::TextOnly,
+    })
+}
+
+fn calculate_dir_size(path: &str) -> f32 {
+    let mut total_size = 0u64;
+
+    fn walk_dir(path: &Path, total: &mut u64) {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    walk_dir(&entry_path, total);
+                } else if let Ok(meta) = entry.metadata() {
+                    *total += meta.len();
+                }
+            }
+        }
+    }
+
+    walk_dir(Path::new(path), &mut total_size);
+    total_size as f32 / (1024.0 * 1024.0 * 1024.0)
+}
+
+fn detect_quantization(model_dir: &Path) -> String {
+    if let Ok(entries) = std::fs::read_dir(model_dir) {
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                for sub_entry in std::fs::read_dir(&entry_path)
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                {
+                    if let Some(name) = sub_entry.file_name().to_str() {
+                        if name == "config.json" {
+                            if let Ok(content) = fs::read_to_string(sub_entry.path()) {
+                                if let Ok(json) =
+                                    serde_json::from_str::<serde_json::Value>(&content)
+                                {
+                                    if let Some(quant) = json.get("quantization_config") {
+                                        if let Some(method) = quant.get("quant_method") {
+                                            if let Some(method_str) = method.as_str() {
+                                                return method_str.to_lowercase();
+                                            }
+                                        }
+                                    }
+
+                                    if let Some(torch_dtype) = json.get("torch_dtype") {
+                                        if let Some(dtype_str) = torch_dtype.as_str() {
+                                            return match dtype_str {
+                                                "float16" | "torch.float16" => "fp16".to_string(),
+                                                "float32" | "torch.float32" => "fp32".to_string(),
+                                                "bfloat16" | "torch.bfloat16" => "bf16".to_string(),
+                                                _ => dtype_str.to_lowercase(),
+                                            };
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    "unknown".to_string()
+}
