@@ -24,7 +24,6 @@ impl DownloadManager {
         let file_name_clean = file_name.split('/').last().unwrap_or(&file_name).to_string();
         let dest_path = std::path::PathBuf::from(&self.download_dir).join(&file_name_clean);
 
-        // Ensure download directory exists
         if let Some(parent) = dest_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 log::warn!("Failed to create download directory {}: {}", parent.display(), e);
@@ -46,9 +45,33 @@ impl DownloadManager {
         id
     }
 
+    pub fn add_task_sync(&self, source: ModelSource, file_name: String) -> String {
+        let id = Uuid::new_v4().to_string();
+        let file_name_clean = file_name.split('/').last().unwrap_or(&file_name).to_string();
+        let dest_path = std::path::PathBuf::from(&self.download_dir).join(&file_name_clean);
+
+        if let Some(parent) = dest_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                log::warn!("Failed to create download directory {}: {}", parent.display(), e);
+            }
+        }
+
+        let task = DownloadTask {
+            id: id.clone(),
+            source,
+            file_name: file_name_clean,
+            dest_path: dest_path.to_string_lossy().to_string(),
+            status: DownloadStatus::Pending,
+            downloaded_bytes: 0,
+            total_bytes: 0,
+        };
+
+        let mut tasks = self.tasks.blocking_write();
+        tasks.push(task);
+        id
+    }
+
     pub fn get_tasks_sync(&self) -> Vec<DownloadTask> {
-        // Note: This should only be used from synchronous contexts
-        // For async contexts, use get_tasks() instead
         let tasks = self.tasks.blocking_read();
         tasks.clone()
     }
@@ -141,6 +164,40 @@ impl HuggingFaceDownloader {
         Ok(result)
     }
 
+    pub fn search_sync(&self, query: &str) -> ProviderResult<Vec<crate::core::DownloadableModel>> {
+        let search_url = format!(
+            "https://huggingface.co/api/models?search={}&sort=downloads&direction=-1&limit=30",
+            urlencoding::encode(query)
+        );
+
+        let response = reqwest::blocking::get(&search_url)
+            .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
+
+        let models: Vec<serde_json::Value> = response
+            .json()
+            .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for model in models {
+            let id = model["id"].as_str().unwrap_or("").to_string();
+            if id.is_empty() {
+                continue;
+            }
+
+            let downloads = model["downloads"].as_u64().unwrap_or(0) as u32;
+
+            result.push(crate::core::DownloadableModel {
+                id: id.clone(),
+                name: id.clone(),
+                size_gb: 0.0,
+                downloads,
+                source: ModelSource::HuggingFace { repo_id: id },
+            });
+        }
+
+        Ok(result)
+    }
+
     pub async fn list_files(&self, model_id: &str) -> ProviderResult<Vec<ModelFile>> {
         let api_url = format!(
             "https://huggingface.co/api/models/{}/tree/main?recursive=true",
@@ -157,6 +214,37 @@ impl HuggingFaceDownloader {
         let files: Vec<serde_json::Value> = response
             .json()
             .await
+            .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
+
+        let mut result = Vec::new();
+        for item in files {
+            if item["type"].as_str() != Some("file") {
+                continue;
+            }
+
+            let path = item["path"].as_str().unwrap_or("").to_string();
+            let size = item["size"].as_u64().unwrap_or(0);
+
+            result.push(ModelFile {
+                path,
+                size_bytes: size,
+            });
+        }
+
+        Ok(result)
+    }
+
+    pub fn list_files_sync(&self, model_id: &str) -> ProviderResult<Vec<ModelFile>> {
+        let api_url = format!(
+            "https://huggingface.co/api/models/{}/tree/main?recursive=true",
+            model_id
+        );
+
+        let response = reqwest::blocking::get(&api_url)
+            .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
+
+        let files: Vec<serde_json::Value> = response
+            .json()
             .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
 
         let mut result = Vec::new();
@@ -216,12 +304,10 @@ impl DirectUrlDownloader {
         Self
     }
 
-    pub async fn fetch_headers(&self, url: &str) -> ProviderResult<DownloadHeaders> {
-        let client = reqwest::Client::new();
-        let response = client
+    pub fn fetch_headers_sync(&self, url: &str) -> ProviderResult<DownloadHeaders> {
+        let response = reqwest::blocking::Client::new()
             .head(url)
             .send()
-            .await
             .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
 
         let content_length = response
@@ -270,20 +356,17 @@ impl GitHubReleaseDownloader {
         Self
     }
 
-    pub async fn get_latest_release(&self, owner: &str, repo: &str) -> ProviderResult<GitHubRelease> {
+    pub fn get_latest_release_sync(&self, owner: &str, repo: &str) -> ProviderResult<GitHubRelease> {
         let url = format!("https://api.github.com/repos/{}/{}/releases/latest", owner, repo);
 
-        let client = reqwest::Client::new();
-        let response = client
+        let response = reqwest::blocking::Client::new()
             .get(&url)
             .header("Accept", "application/vnd.github+json")
             .send()
-            .await
             .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
 
         let release: serde_json::Value = response
             .json()
-            .await
             .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
 
         let tag = release["tag_name"]
@@ -306,45 +389,6 @@ impl GitHubReleaseDownloader {
         }
 
         Ok(GitHubRelease { tag, assets })
-    }
-
-    pub async fn get_release(&self, owner: &str, repo: &str, tag: &str) -> ProviderResult<GitHubRelease> {
-        let url = format!(
-            "https://api.github.com/repos/{}/{}/releases/tags/{}",
-            owner, repo, tag
-        );
-
-        let client = reqwest::Client::new();
-        let response = client
-            .get(&url)
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
-
-        let release: serde_json::Value = response
-            .json()
-            .await
-            .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
-
-        let mut assets = Vec::new();
-        if let Some(assets_arr) = release["assets"].as_array() {
-            for asset in assets_arr {
-                assets.push(GitHubAsset {
-                    name: asset["name"].as_str().unwrap_or("").to_string(),
-                    size: asset["size"].as_u64().unwrap_or(0),
-                    download_url: asset["browser_download_url"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string(),
-                });
-            }
-        }
-
-        Ok(GitHubRelease {
-            tag: tag.to_string(),
-            assets,
-        })
     }
 }
 

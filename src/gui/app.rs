@@ -3,17 +3,16 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::core::{
-    LogBuffer, LogLevel, LlmProvider, ModelInfo, ModelSource, ProviderConfig, ProviderRegistry,
+    LlmProvider, LogBuffer, LogLevel, ModelInfo, ModelSource, ProviderConfig, ProviderRegistry,
     ProviderSettings, ServerController,
 };
 use crate::models::{AppSettings, GpuInfo};
 use crate::services::{
-    config_persistence, get_system_stats, get_system_info_summary, recommend_gpu_layers, gpu_detector,
-    DownloadManager, DirectUrlDownloader, GitHubReleaseDownloader, HuggingFaceDownloader,
-    detect_running_servers, parse_server_args,
-    save_model_config, load_model_config, get_fallback_config,
-    load_provider_settings_for, save_provider_settings_for,
-    get_provider_install_info, check_provider_installed,
+    check_provider_installed, config_persistence, detect_running_servers, get_fallback_config,
+    get_provider_install_info, get_system_info_summary, get_system_stats, gpu_detector,
+    load_model_config, load_provider_settings_for, parse_server_args, recommend_gpu_layers,
+    save_model_config, save_provider_settings_for, DirectUrlDownloader, DownloadManager,
+    GitHubReleaseDownloader, HuggingFaceDownloader,
 };
 
 pub fn run() {
@@ -101,7 +100,9 @@ impl App {
             log_buffer,
             search_query: String::new(),
             available_providers,
-            download_manager: Arc::new(RwLock::new(DownloadManager::new(settings.download_directory.clone()))),
+            download_manager: Arc::new(RwLock::new(DownloadManager::new(
+                settings.download_directory.clone(),
+            ))),
             search_results: Arc::new(RwLock::new(Vec::new())),
             download_source_type: "HuggingFace".to_string(),
             download_url: String::new(),
@@ -115,7 +116,10 @@ impl App {
         }
     }
 
-    fn build_for_provider(provider_id: &str, settings: &AppSettings) -> (Vec<ModelInfo>, ProviderConfig) {
+    fn build_for_provider(
+        provider_id: &str,
+        settings: &AppSettings,
+    ) -> (Vec<ModelInfo>, ProviderConfig) {
         let provider = Self::get_provider_static(provider_id);
 
         let mut server_config = provider.get_config_template();
@@ -124,7 +128,12 @@ impl App {
         let running_servers = detect_running_servers();
         for server in &running_servers {
             if server.provider_id == provider_id {
-                log::info!("Detected running {} server (PID {}): {}", server.binary, server.pid, server.command_line);
+                log::info!(
+                    "Detected running {} server (PID {}): {}",
+                    server.binary,
+                    server.pid,
+                    server.command_line
+                );
                 let detected_config = parse_server_args(&server.provider_id, &server.command_line);
 
                 if !detected_config.model_path.is_empty() {
@@ -202,7 +211,8 @@ impl App {
         self.server_controller = ServerController::new();
         self.log_buffer = self.server_controller.get_log_buffer();
         self.server_controller.set_provider(provider);
-        self.server_controller.set_provider_settings(self.provider_settings.clone());
+        self.server_controller
+            .set_provider_settings(self.provider_settings.clone());
     }
 
     fn save_settings(&self) {
@@ -214,19 +224,13 @@ impl App {
     fn render_bottom_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui
-                .selectable_label(
-                    self.bottom_view == BottomView::Monitor,
-                    "Monitor",
-                )
+                .selectable_label(self.bottom_view == BottomView::Monitor, "Monitor")
                 .clicked()
             {
                 self.bottom_view = BottomView::Monitor;
             }
             if ui
-                .selectable_label(
-                    self.bottom_view == BottomView::Log,
-                    "Log",
-                )
+                .selectable_label(self.bottom_view == BottomView::Log, "Log")
                 .clicked()
             {
                 self.bottom_view = BottomView::Log;
@@ -245,7 +249,8 @@ impl App {
                     stats.ram_used_mb, stats.ram_total_mb
                 ));
                 ui.separator();
-                let cpu_temp_str = stats.cpu_temperature
+                let cpu_temp_str = stats
+                    .cpu_temperature
                     .map(|t| format!(" ({:.0}°C)", t))
                     .unwrap_or_default();
                 ui.label(format!("CPU: {:.1}%{}", stats.cpu_percent, cpu_temp_str));
@@ -256,14 +261,16 @@ impl App {
                         .temperature_c
                         .map(|t| format!("{:.0}°C", t))
                         .unwrap_or_else(|| "N/A".to_string());
-                    ui.label(format!("GPU{} ({}): {}", gpu_temp.index, gpu_temp.name, temp_str));
+                    ui.label(format!(
+                        "GPU{} ({}): {}",
+                        gpu_temp.index, gpu_temp.name, temp_str
+                    ));
                 }
                 if !stats.gpu_temperatures.is_empty() {
                     ui.separator();
                 }
 
-                if self.server_controller.get_status()
-                    == crate::models::ServerStatus::Running
+                if self.server_controller.get_status() == crate::models::ServerStatus::Running
                     && self.frame_counter % 300 == 0
                 {
                     if let Some(server_stats) = crate::services::fetch_server_stats(
@@ -276,10 +283,7 @@ impl App {
                             .unwrap_or(0.0);
                         ui.label(format!("TPS: {:.1}", tps));
                         ui.separator();
-                        ui.label(format!(
-                            "Queue: {}",
-                            server_stats.queue_size.unwrap_or(0)
-                        ));
+                        ui.label(format!("Queue: {}", server_stats.queue_size.unwrap_or(0)));
                     }
                 }
             } else {
@@ -394,7 +398,8 @@ impl App {
                                 self.server_config.host = fallback.host;
                                 self.server_config.cache_type_k = fallback.cache_type_k;
                                 self.server_config.cache_type_v = fallback.cache_type_v;
-                                self.server_config.num_prompt_tracking = fallback.num_prompt_tracking;
+                                self.server_config.num_prompt_tracking =
+                                    fallback.num_prompt_tracking;
                             }
                         }
                     }
@@ -451,8 +456,7 @@ impl App {
 
                 ui.label("Batch Size:");
                 ui.add(
-                    egui::DragValue::new(&mut self.server_config.batch_size)
-                        .clamp_range(1..=8192),
+                    egui::DragValue::new(&mut self.server_config.batch_size).clamp_range(1..=8192),
                 );
                 ui.end_row();
 
@@ -471,16 +475,19 @@ impl App {
                     self.server_config.gpu_layers = gpu_mem_value;
 
                     if ui.button("Auto").clicked() {
-                        let model_size_gb = if let Ok(meta) = std::fs::metadata(&self.server_config.model_path) {
-                            meta.len() as f32 / (1024.0 * 1024.0 * 1024.0)
-                        } else {
-                            7.0
-                        };
+                        let model_size_gb =
+                            if let Ok(meta) = std::fs::metadata(&self.server_config.model_path) {
+                                meta.len() as f32 / (1024.0 * 1024.0 * 1024.0)
+                            } else {
+                                7.0
+                            };
 
                         let total_layers = if self.selected_provider == "llama.cpp" {
-                            crate::providers::llama_cpp::read_gguf_n_layer(&self.server_config.model_path)
-                                .map(|l| l as i32)
-                                .unwrap_or(-1)
+                            crate::providers::llama_cpp::read_gguf_n_layer(
+                                &self.server_config.model_path,
+                            )
+                            .map(|l| l as i32)
+                            .unwrap_or(-1)
                         } else {
                             -1
                         };
@@ -492,9 +499,7 @@ impl App {
                 ui.end_row();
 
                 ui.label("Threads:");
-                ui.add(
-                    egui::DragValue::new(&mut self.server_config.threads).clamp_range(1..=64),
-                );
+                ui.add(egui::DragValue::new(&mut self.server_config.threads).clamp_range(1..=64));
                 ui.end_row();
 
                 ui.label("K Cache Type:");
@@ -540,8 +545,7 @@ impl App {
 
                 ui.label("Port:");
                 ui.add(
-                    egui::DragValue::new(&mut self.server_config.port)
-                        .clamp_range(1024..=65535),
+                    egui::DragValue::new(&mut self.server_config.port).clamp_range(1024..=65535),
                 );
                 ui.end_row();
             });
@@ -554,7 +558,11 @@ impl App {
                     crate::models::ServerStatus::Running => {
                         if ui.button("Stop Server").clicked() {
                             if !self.server_config.model_path.is_empty() {
-                                save_model_config(&self.server_config.model_path, &self.server_config).ok();
+                                save_model_config(
+                                    &self.server_config.model_path,
+                                    &self.server_config,
+                                )
+                                .ok();
                             }
                             self.server_controller.stop().ok();
                         }
@@ -562,7 +570,11 @@ impl App {
                     _ => {
                         if ui.button("Start Server").clicked() {
                             if !self.server_config.model_path.is_empty() {
-                                save_model_config(&self.server_config.model_path, &self.server_config).ok();
+                                save_model_config(
+                                    &self.server_config.model_path,
+                                    &self.server_config,
+                                )
+                                .ok();
                             }
                             let provider = self.get_current_provider();
                             self.server_controller
@@ -705,7 +717,9 @@ impl eframe::App for App {
                     ui.separator();
 
                     for opt in &options {
-                        let current_value = self.server_config.get_option(&opt.id)
+                        let current_value = self
+                            .server_config
+                            .get_option(&opt.id)
                             .unwrap_or_else(|| opt.default_value.clone());
 
                         ui.label(&opt.description);
@@ -734,11 +748,7 @@ impl eframe::App for App {
                                     .selected_text(&value)
                                     .show_ui(ui, |ui| {
                                         for v in values {
-                                            ui.selectable_value(
-                                                &mut value,
-                                                v.clone(),
-                                                v,
-                                            );
+                                            ui.selectable_value(&mut value, v.clone(), v);
                                         }
                                     });
                                 if value != current_value {
@@ -850,9 +860,21 @@ impl eframe::App for App {
                     egui::ComboBox::from_id_source("download_source")
                         .selected_text(&self.download_source_type)
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.download_source_type, "HuggingFace".to_string(), "HuggingFace");
-                            ui.selectable_value(&mut self.download_source_type, "Direct URL".to_string(), "Direct URL");
-                            ui.selectable_value(&mut self.download_source_type, "GitHub Release".to_string(), "GitHub Release");
+                            ui.selectable_value(
+                                &mut self.download_source_type,
+                                "HuggingFace".to_string(),
+                                "HuggingFace",
+                            );
+                            ui.selectable_value(
+                                &mut self.download_source_type,
+                                "Direct URL".to_string(),
+                                "Direct URL",
+                            );
+                            ui.selectable_value(
+                                &mut self.download_source_type,
+                                "GitHub Release".to_string(),
+                                "GitHub Release",
+                            );
                         });
 
                     ui.separator();
@@ -869,11 +891,12 @@ impl eframe::App for App {
                                     let query = self.search_query.clone();
                                     let search_results = self.search_results.clone();
                                     let app_handle = ctx.clone();
-                                    tokio::spawn(async move {
+                                    std::thread::spawn(move || {
                                         let downloader = HuggingFaceDownloader::new();
-                                        match downloader.search(&query).await {
+                                        match downloader.search_sync(&query) {
                                             Ok(results) => {
-                                                let mut results_lock = search_results.write().await;
+                                                let mut results_lock =
+                                                    search_results.blocking_write();
                                                 *results_lock = results;
                                             }
                                             Err(e) => {
@@ -891,13 +914,15 @@ impl eframe::App for App {
                             let results_guard = search_results_ref.blocking_read();
                             if !results_guard.is_empty() {
                                 ui.label("Search Results:");
-                                egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
-                                    for result in results_guard.iter() {
-                                        if ui.button(&result.name).clicked() {
-                                            self.download_url = result.id.clone();
+                                egui::ScrollArea::vertical()
+                                    .max_height(150.0)
+                                    .show(ui, |ui| {
+                                        for result in results_guard.iter() {
+                                            if ui.button(&result.name).clicked() {
+                                                self.download_url = result.id.clone();
+                                            }
                                         }
-                                    }
-                                });
+                                    });
                             }
 
                             ui.separator();
@@ -905,17 +930,23 @@ impl eframe::App for App {
                             ui.text_edit_singleline(&mut self.download_url);
                             ui.label("Example: TheBloke/Mistral-7B-Instruct-v0.1-GGUF");
 
-                            if ui.button("Start Download").clicked() && !self.download_url.is_empty() {
+                            if ui.button("Start Download").clicked()
+                                && !self.download_url.is_empty()
+                            {
                                 let model_id = self.download_url.clone();
                                 let manager = self.download_manager.clone();
 
-                                tokio::spawn(async move {
+                                std::thread::spawn(move || {
                                     let downloader = HuggingFaceDownloader::new();
-                                    match downloader.list_files(&model_id).await {
+                                    match downloader.list_files_sync(&model_id) {
                                         Ok(files) => {
+                                            let manager = manager.blocking_read();
                                             for file in files {
-                                                let source = ModelSource::HuggingFace { repo_id: model_id.clone() };
-                                                let id = manager.write().await.add_task(source, file.path.clone()).await;
+                                                let source = ModelSource::HuggingFace {
+                                                    repo_id: model_id.clone(),
+                                                };
+                                                let id = manager
+                                                    .add_task_sync(source, file.path.clone());
                                                 log::info!("Added download task: {}", id);
                                             }
                                         }
@@ -930,19 +961,28 @@ impl eframe::App for App {
                             ui.label("Enter direct download URL:");
                             ui.text_edit_singleline(&mut self.download_url);
 
-                            if ui.button("Start Download").clicked() && !self.download_url.is_empty() {
+                            if ui.button("Start Download").clicked()
+                                && !self.download_url.is_empty()
+                            {
                                 let url = self.download_url.clone();
                                 let manager = self.download_manager.clone();
 
-                                tokio::spawn(async move {
+                                std::thread::spawn(move || {
                                     let downloader = DirectUrlDownloader::new();
-                                    match downloader.fetch_headers(&url).await {
+                                    match downloader.fetch_headers_sync(&url) {
                                         Ok(headers) => {
                                             let file_name = headers.file_name.clone();
                                             let content_length = headers.content_length;
-                                            let source = ModelSource::DirectUrl { url: url.clone() };
-                                            let _id = manager.write().await.add_task(source, file_name.clone()).await;
-                                            log::info!("Started download: {} ({} bytes)", file_name, content_length);
+                                            let source =
+                                                ModelSource::DirectUrl { url: url.clone() };
+                                            let manager = manager.blocking_read();
+                                            let _id =
+                                                manager.add_task_sync(source, file_name.clone());
+                                            log::info!(
+                                                "Started download: {} ({} bytes)",
+                                                file_name,
+                                                content_length
+                                            );
                                         }
                                         Err(e) => {
                                             log::error!("Failed to fetch headers: {}", e);
@@ -961,16 +1001,24 @@ impl eframe::App for App {
                                 ui.text_edit_singleline(&mut self.download_github_repo);
                             });
 
-                            if ui.button("Fetch Release").clicked() && !self.download_github_owner.is_empty() && !self.download_github_repo.is_empty() {
+                            if ui.button("Fetch Release").clicked()
+                                && !self.download_github_owner.is_empty()
+                                && !self.download_github_repo.is_empty()
+                            {
                                 let owner = self.download_github_owner.clone();
                                 let repo = self.download_github_repo.clone();
                                 let manager = self.download_manager.clone();
 
-                                tokio::spawn(async move {
+                                std::thread::spawn(move || {
                                     let downloader = GitHubReleaseDownloader::new();
-                                    match downloader.get_latest_release(&owner, &repo).await {
+                                    match downloader.get_latest_release_sync(&owner, &repo) {
                                         Ok(release) => {
-                                            log::info!("Found release: {} with {} assets", release.tag, release.assets.len());
+                                            log::info!(
+                                                "Found release: {} with {} assets",
+                                                release.tag,
+                                                release.assets.len()
+                                            );
+                                            let manager = manager.blocking_read();
                                             for asset in release.assets {
                                                 let source = ModelSource::GitHubRelease {
                                                     owner: owner.clone(),
@@ -978,7 +1026,7 @@ impl eframe::App for App {
                                                     tag: release.tag.clone(),
                                                     asset_name: asset.name.clone(),
                                                 };
-                                                let _id = manager.write().await.add_task(source, asset.name).await;
+                                                let _id = manager.add_task_sync(source, asset.name);
                                             }
                                         }
                                         Err(e) => {
@@ -1010,10 +1058,15 @@ impl eframe::App for App {
                                         } else {
                                             0.0
                                         };
-                                        ui.add(egui::ProgressBar::new(progress).text(&format!("{:.1}%", progress * 100.0)))
+                                        ui.add(
+                                            egui::ProgressBar::new(progress)
+                                                .text(&format!("{:.1}%", progress * 100.0)),
+                                        )
                                     }
                                     crate::core::DownloadStatus::Completed => ui.label("Completed"),
-                                    crate::core::DownloadStatus::Failed(e) => ui.label(format!("Failed: {}", e)),
+                                    crate::core::DownloadStatus::Failed(e) => {
+                                        ui.label(format!("Failed: {}", e))
+                                    }
                                     crate::core::DownloadStatus::Cancelled => ui.label("Cancelled"),
                                 }
                             });
@@ -1026,7 +1079,7 @@ impl eframe::App for App {
             let provider_id = &self.provider_setup_provider;
             if let Some(info) = get_provider_install_info(provider_id) {
                 let installed = check_provider_installed(provider_id);
-                
+
                 egui::Window::new(format!("Setup: {}", info.provider_name))
                     .open(&mut self.show_provider_setup)
                     .default_width(600.0)
@@ -1034,7 +1087,7 @@ impl eframe::App for App {
                     .show(ctx, |ui| {
                         ui.heading(format!("{} Setup", info.provider_name));
                         ui.separator();
-                        
+
                         if installed {
                             ui.colored_label(
                                 egui::Color32::GREEN,
@@ -1046,7 +1099,7 @@ impl eframe::App for App {
                                 format!("✗ {} is NOT installed", info.provider_name),
                             );
                         }
-                        
+
                         ui.separator();
                         ui.heading("Quick Install");
                         ui.label(info.simple_description);
@@ -1056,14 +1109,16 @@ impl eframe::App for App {
                                 ui.output_mut(|o| o.copied_text = info.simple_command.to_string());
                             }
                         });
-                        
+
                         ui.separator();
                         ui.heading("Advanced Install");
                         ui.label(info.advanced_description);
                         ui.horizontal(|ui| {
                             ui.code(info.advanced_command);
                             if ui.button("Copy").clicked() {
-                                ui.output_mut(|o| o.copied_text = info.advanced_command.to_string());
+                                ui.output_mut(|o| {
+                                    o.copied_text = info.advanced_command.to_string()
+                                });
                             }
                         });
                     });
