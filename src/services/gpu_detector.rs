@@ -115,73 +115,90 @@ pub fn detect_gpus() -> Vec<GpuInfo> {
     gpus
 }
 
-pub fn get_gpu_usage(index: u32) -> Result<GpuUsage, String> {
-    let output = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=memory.used",
-            "--format=csv,noheader,nounits",
-            &format!("--id={}", index),
-        ])
-        .output()
-        .map_err(|e| e.to_string())?;
-
-    if !output.status.success() {
-        return Err("Failed to query GPU usage".to_string());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let used = stdout
-        .trim()
-        .parse::<u32>()
-        .map_err(|_| "Failed to parse VRAM")?;
-
-    let gpu = GpuInfo {
-        name: String::new(),
-        total_vram_mb: 0,
-        index,
-        provider: GpuProvider::Nvidia,
-        temperature_c: None,
-    };
-    let temp = get_gpu_temperature(&gpu).map(|t| t as f32);
-
-    Ok(GpuUsage {
-        index,
-        used_vram_mb: used,
-        temperature_c: temp,
-    })
-}
-
-pub fn get_all_gpu_usage() -> Vec<GpuUsage> {
-    detect_gpus()
-        .iter()
-        .filter_map(|gpu| {
-            let mut usage = GpuUsage {
-                index: gpu.index,
-                used_vram_mb: 0,
-                temperature_c: None,
-            };
-            if let Ok(output) = Command::new("nvidia-smi")
+fn get_gpu_usage_for_gpu(gpu: &GpuInfo) -> Option<GpuUsage> {
+    let used_vram_mb = match gpu.provider {
+        GpuProvider::Nvidia => {
+            let output = Command::new("nvidia-smi")
                 .args([
                     "--query-gpu=memory.used",
                     "--format=csv,noheader,nounits",
                     &format!("--id={}", gpu.index),
                 ])
                 .output()
+                .ok()?;
+
+            if output.status.success() {
+                String::from_utf8_lossy(&output.stdout)
+                    .trim()
+                    .parse::<u32>()
+                    .ok()?
+            } else {
+                return None;
+            }
+        }
+        GpuProvider::Amd => {
+            if let Ok(output) = Command::new("rocm-smi")
+                .args(["--showmeminfo", "vram", "--json"])
+                .output()
             {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    if let Ok(used) = stdout.trim().parse::<u32>() {
-                        usage.used_vram_mb = used;
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                        if let Some(card) = json.get(&gpu.index.to_string()) {
+                            if let (Some(total), Some(used_pct)) = (
+                                card.get("VRAM (total memory)").and_then(|v| v.as_f64()),
+                                card.get("VRAM %").and_then(|v| v.as_f64()),
+                            ) {
+                                (total * used_pct / 100.0) as u32
+                            } else {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    } else {
+                        return None;
                     }
+                } else {
+                    return None;
                 }
+            } else {
+                return None;
             }
-            usage.temperature_c = get_gpu_temperature(gpu).map(|t| t as f32);
-            Some(usage)
-        })
+        }
+        GpuProvider::Intel | GpuProvider::Unknown => {
+            // Intel GPU memory is shared with system RAM, report as 0
+            0
+        }
+    };
+
+    let temperature_c = get_gpu_temperature(gpu).map(|t| t as f32);
+
+    Some(GpuUsage {
+        index: gpu.index,
+        used_vram_mb,
+        temperature_c,
+    })
+}
+
+pub fn get_gpu_usage(index: u32) -> Result<GpuUsage, String> {
+    let gpus = detect_gpus();
+    let gpu = gpus
+        .iter()
+        .find(|g| g.index == index)
+        .ok_or_else(|| format!("GPU {} not found", index))?;
+
+    get_gpu_usage_for_gpu(gpu).ok_or_else(|| "Failed to get GPU usage".to_string())
+}
+
+pub fn get_all_gpu_usage() -> Vec<GpuUsage> {
+    detect_gpus()
+        .iter()
+        .filter_map(|gpu| get_gpu_usage_for_gpu(gpu))
         .collect()
 }
 
-pub fn get_gpu_temperature_nvidia(index: u32) -> Option<u32> {
+fn get_gpu_temperature_nvidia(index: u32) -> Option<u32> {
     let output = Command::new("nvidia-smi")
         .args([
             "--query-gpu=temperature.gpu",
@@ -199,7 +216,7 @@ pub fn get_gpu_temperature_nvidia(index: u32) -> Option<u32> {
     stdout.trim().parse::<u32>().ok()
 }
 
-pub fn get_gpu_temperature_amd(index: u32) -> Option<u32> {
+fn get_gpu_temperature_amd(index: u32) -> Option<u32> {
     if let Ok(output) = Command::new("rocm-smi")
         .args(["--showtemp", "--json"])
         .output()
@@ -219,27 +236,31 @@ pub fn get_gpu_temperature_amd(index: u32) -> Option<u32> {
     read_sysfs_gpu_temp(index)
 }
 
-pub fn get_gpu_temperature_intel(index: u32) -> Option<u32> {
+fn get_gpu_temperature_intel(index: u32) -> Option<u32> {
     read_sysfs_gpu_temp(index)
 }
 
-pub fn read_sysfs_gpu_temp(_index: u32) -> Option<u32> {
+fn read_sysfs_gpu_temp(index: u32) -> Option<u32> {
     if let Ok(entries) = fs::read_dir("/sys/class/drm") {
+        let mut card_index = 0u32;
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             if name_str.starts_with("card") && !name_str.contains('-') {
-                let hwmon_path = entry.path().join("device").join("hwmon");
-                if let Ok(hwmon_entries) = fs::read_dir(hwmon_path) {
-                    for hwmon_entry in hwmon_entries.flatten() {
-                        let temp_path = hwmon_entry.path().join("temp1_input");
-                        if let Ok(content) = fs::read_to_string(temp_path) {
-                            if let Ok(millidegrees) = content.trim().parse::<f32>() {
-                                return Some((millidegrees / 1000.0).round() as u32);
+                if card_index == index {
+                    let hwmon_path = entry.path().join("device").join("hwmon");
+                    if let Ok(hwmon_entries) = fs::read_dir(hwmon_path) {
+                        for hwmon_entry in hwmon_entries.flatten() {
+                            let temp_path = hwmon_entry.path().join("temp1_input");
+                            if let Ok(content) = fs::read_to_string(temp_path) {
+                                if let Ok(millidegrees) = content.trim().parse::<f32>() {
+                                    return Some((millidegrees / 1000.0).round() as u32);
+                                }
                             }
                         }
                     }
                 }
+                card_index += 1;
             }
         }
     }
