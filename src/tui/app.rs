@@ -586,22 +586,49 @@ fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
     let stats = get_system_stats();
 
     let vram_text = format!("VRAM: {}/{} MB", stats.vram_used_mb, stats.vram_total_mb);
-    let ram_text = format!("RAM: {}/{} MB", stats.ram_used_mb, stats.ram_total_mb);
-    let cpu_text = format!("CPU: {:.1}%", stats.cpu_percent);
+
+    let ram_cpu_text = if let Some(cpu_temp) = stats.cpu_temperature {
+        format!(
+            "RAM: {}/{} MB | CPU: {:.1}% ({:.0}°C)",
+            stats.ram_used_mb, stats.ram_total_mb, stats.cpu_percent, cpu_temp
+        )
+    } else {
+        format!(
+            "RAM: {}/{} MB | CPU: {:.1}%",
+            stats.ram_used_mb, stats.ram_total_mb, stats.cpu_percent
+        )
+    };
+
+    let gpu_text = if stats.gpu_temperatures.is_empty() {
+        "No GPU".to_string()
+    } else {
+        stats
+            .gpu_temperatures
+            .iter()
+            .map(|gpu| {
+                let temp = gpu
+                    .temperature_c
+                    .map(|t| format!("{:.0}°C", t))
+                    .unwrap_or_else(|| "N/A".to_string());
+                format!("GPU{}: {}", gpu.index, temp)
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
-            Constraint::Percentage(25),
+            Constraint::Percentage(20),
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
             Constraint::Min(0),
         ])
         .split(area);
 
     f.render_widget(Paragraph::new(vram_text), chunks[0]);
-    f.render_widget(Paragraph::new(ram_text), chunks[1]);
-    f.render_widget(Paragraph::new(cpu_text), chunks[2]);
+    f.render_widget(Paragraph::new(ram_cpu_text), chunks[1]);
+    f.render_widget(Paragraph::new(gpu_text), chunks[2]);
     f.render_widget(
         Paragraph::new(app.status_message.as_str())
             .alignment(ratatui::layout::Alignment::Right)
