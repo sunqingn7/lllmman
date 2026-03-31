@@ -63,11 +63,17 @@ impl App {
         let gpus = gpu_detector::detect_gpus();
         let available_providers = ProviderRegistry::list();
 
-        let selected_provider = if available_providers.is_empty() {
-            "llama.cpp".to_string()
-        } else {
-            available_providers[0].0.to_string()
-        };
+        // First, detect running servers across ALL providers
+        let running_servers = detect_running_servers();
+        let detected_provider = running_servers.first().map(|s| s.provider_id.clone());
+
+        let selected_provider = detected_provider.unwrap_or_else(|| {
+            if available_providers.is_empty() {
+                "llama.cpp".to_string()
+            } else {
+                available_providers[0].0.to_string()
+            }
+        });
 
         let (models, server_config) = Self::build_for_provider(&selected_provider, &settings);
         let provider_settings = load_provider_settings_for(&selected_provider);
