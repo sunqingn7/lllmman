@@ -8,7 +8,7 @@ use crate::core::{
 };
 use crate::models::{AppSettings, GpuInfo};
 use crate::services::{
-    config_persistence, get_system_stats, gpu_detector,
+    config_persistence, get_system_stats, get_system_info_summary, recommend_gpu_layers, gpu_detector,
     DownloadManager, DirectUrlDownloader, GitHubReleaseDownloader, HuggingFaceDownloader,
     detect_running_servers, parse_server_args,
     save_model_config, load_model_config, get_fallback_config,
@@ -451,17 +451,38 @@ impl App {
                 ui.end_row();
 
                 ui.label("GPU Memory Utilization:");
-                let mut gpu_mem_value = if self.server_config.gpu_layers <= 0 {
-                    90
-                } else {
-                    self.server_config.gpu_layers
-                };
-                ui.add(
-                    egui::DragValue::new(&mut gpu_mem_value)
-                        .clamp_range(1..=100)
-                        .suffix("%"),
-                );
-                self.server_config.gpu_layers = gpu_mem_value;
+                ui.horizontal(|ui| {
+                    let mut gpu_mem_value = if self.server_config.gpu_layers <= 0 {
+                        90
+                    } else {
+                        self.server_config.gpu_layers
+                    };
+                    ui.add(
+                        egui::DragValue::new(&mut gpu_mem_value)
+                            .clamp_range(1..=100)
+                            .suffix("%"),
+                    );
+                    self.server_config.gpu_layers = gpu_mem_value;
+
+                    if ui.button("Auto").clicked() {
+                        let model_size_gb = if let Ok(meta) = std::fs::metadata(&self.server_config.model_path) {
+                            meta.len() as f32 / (1024.0 * 1024.0 * 1024.0)
+                        } else {
+                            7.0
+                        };
+
+                        let total_layers = if self.selected_provider == "llama.cpp" {
+                            crate::providers::llama_cpp::read_gguf_n_layer(&self.server_config.model_path)
+                                .map(|l| l as i32)
+                                .unwrap_or(-1)
+                        } else {
+                            -1
+                        };
+
+                        let recommended = recommend_gpu_layers(model_size_gb, total_layers);
+                        self.server_config.gpu_layers = recommended.max(1).min(100);
+                    }
+                });
                 ui.end_row();
 
                 ui.label("Threads:");
@@ -739,6 +760,11 @@ impl eframe::App for App {
                 .default_height(300.0)
                 .show(ctx, |ui| {
                     ui.heading("GPU Allocation Settings");
+                    ui.separator();
+
+                    ui.label("System Info:");
+                    ui.label(get_system_info_summary());
+
                     ui.separator();
 
                     ui.label("Allocation Mode:");
