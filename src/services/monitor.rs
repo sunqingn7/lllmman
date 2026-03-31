@@ -28,6 +28,8 @@ pub fn get_system_stats() -> MonitorStats {
         cpu_percent: cpu,
         tokens_per_second: 0.0,
         active_connections: 0,
+        gpu_temperatures: Vec::new(),
+        cpu_temperature: None,
     }
 }
 

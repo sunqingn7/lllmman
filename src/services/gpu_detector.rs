@@ -25,6 +25,7 @@ pub fn detect_gpus() -> Vec<GpuInfo> {
                             total_vram_mb: vram,
                             index,
                             provider: GpuProvider::Nvidia,
+                            temperature_c: None,
                         });
                     }
                 }
@@ -58,6 +59,7 @@ pub fn get_gpu_usage(index: u32) -> Result<GpuUsage, String> {
     Ok(GpuUsage {
         index,
         used_vram_mb: used,
+        temperature_c: None,
     })
 }
 

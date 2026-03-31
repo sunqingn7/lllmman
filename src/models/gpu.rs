@@ -6,6 +6,7 @@ pub struct GpuInfo {
     pub total_vram_mb: u32,
     pub index: u32,
     pub provider: GpuProvider,
+    pub temperature_c: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -20,4 +21,5 @@ pub enum GpuProvider {
 pub struct GpuUsage {
     pub index: u32,
     pub used_vram_mb: u32,
+    pub temperature_c: Option<u32>,
 }
