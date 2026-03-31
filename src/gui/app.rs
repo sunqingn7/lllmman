@@ -234,8 +234,22 @@ impl App {
                     stats.ram_used_mb, stats.ram_total_mb
                 ));
                 ui.separator();
-                ui.label(format!("CPU: {:.1}%", stats.cpu_percent));
+                let cpu_temp_str = stats.cpu_temperature
+                    .map(|t| format!(" ({:.0}°C)", t))
+                    .unwrap_or_default();
+                ui.label(format!("CPU: {:.1}%{}", stats.cpu_percent, cpu_temp_str));
                 ui.separator();
+
+                for gpu_temp in &stats.gpu_temperatures {
+                    let temp_str = gpu_temp
+                        .temperature_c
+                        .map(|t| format!("{:.0}°C", t))
+                        .unwrap_or_else(|| "N/A".to_string());
+                    ui.label(format!("GPU{}: {}", gpu_temp.index, temp_str));
+                }
+                if !stats.gpu_temperatures.is_empty() {
+                    ui.separator();
+                }
 
                 if self.server_controller.get_status()
                     == crate::models::ServerStatus::Running
