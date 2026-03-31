@@ -1,4 +1,4 @@
-use crate::models::MonitorStats;
+use crate::models::{GpuTemperature, MonitorStats};
 use crate::providers::llama_cpp::read_gguf_n_layer;
 use crate::services::gpu_detector;
 
@@ -10,15 +10,26 @@ pub fn get_system_stats() -> MonitorStats {
     let total_ram = sys.total_memory() as u32;
     let used_ram = sys.used_memory() as u32;
 
+    let gpus = gpu_detector::detect_gpus();
     let gpu_usage = gpu_detector::get_all_gpu_usage();
     let (vram_used, vram_total) = if !gpu_usage.is_empty() {
-        let gpus = gpu_detector::detect_gpus();
         let total: u32 = gpus.iter().map(|g| g.total_vram_mb).sum();
         let used: u32 = gpu_usage.iter().map(|u| u.used_vram_mb).sum();
         (used, total)
     } else {
         (0, 0)
     };
+
+    let gpu_temperatures: Vec<GpuTemperature> = gpus
+        .iter()
+        .map(|gpu| GpuTemperature {
+            index: gpu.index,
+            name: gpu.name.clone(),
+            temperature_c: gpu_detector::get_gpu_temperature(gpu).map(|t| t as f32),
+        })
+        .collect();
+
+    let cpu_temperature = gpu_detector::get_cpu_temperature();
 
     MonitorStats {
         vram_used_mb: vram_used,
@@ -28,8 +39,8 @@ pub fn get_system_stats() -> MonitorStats {
         cpu_percent: cpu,
         tokens_per_second: 0.0,
         active_connections: 0,
-        gpu_temperatures: Vec::new(),
-        cpu_temperature: None,
+        gpu_temperatures,
+        cpu_temperature,
     }
 }
 
