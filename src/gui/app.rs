@@ -245,7 +245,7 @@ impl App {
                         .temperature_c
                         .map(|t| format!("{:.0}°C", t))
                         .unwrap_or_else(|| "N/A".to_string());
-                    ui.label(format!("GPU{}: {}", gpu_temp.index, temp_str));
+                    ui.label(format!("GPU{} ({}): {}", gpu_temp.index, gpu_temp.name, temp_str));
                 }
                 if !stats.gpu_temperatures.is_empty() {
                     ui.separator();
