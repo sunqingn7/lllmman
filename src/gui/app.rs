@@ -1029,16 +1029,11 @@ impl eframe::App for App {
                         ui.heading("Advanced Install");
                         ui.label(info.advanced_description);
                         ui.horizontal(|ui| {
-                            ui.code(info.advanced_command());
+                            ui.code(info.advanced_command);
                             if ui.button("Copy").clicked() {
-                                ui.output_mut(|o| o.copied_text = info.advanced_command().to_string());
+                                ui.output_mut(|o| o.copied_text = info.advanced_command.to_string());
                             }
                         });
-                        
-                        ui.separator();
-                        if ui.button("Refresh Status").clicked() {
-                            // Force re-check
-                        }
                     });
             }
         }

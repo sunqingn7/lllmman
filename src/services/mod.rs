@@ -10,4 +10,4 @@ pub use gpu_detector::{get_cpu_temperature, get_gpu_temperature};
 pub use monitor::{fetch_server_stats, get_system_stats};
 pub use model_downloader::{DownloadManager, DirectUrlDownloader, GitHubReleaseDownloader, HuggingFaceDownloader};
 pub use process_detector::{detect_running_servers, parse_server_args};
-pub use provider_installer::{get_provider_install_info, check_provider_installed, InstallMethod};
+pub use provider_installer::{get_provider_install_info, check_provider_installed};
