@@ -13,6 +13,7 @@ use crate::services::{
     detect_running_servers, parse_server_args,
     save_model_config, load_model_config, get_fallback_config,
     load_provider_settings_for, save_provider_settings_for,
+    get_provider_install_info, check_provider_installed,
 };
 
 pub fn run() {
@@ -46,6 +47,8 @@ pub struct App {
     is_searching: bool,
     frame_counter: u32,
     bottom_view: BottomView,
+    show_provider_setup: bool,
+    provider_setup_provider: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -101,6 +104,8 @@ impl App {
             is_searching: false,
             frame_counter: 0,
             bottom_view: BottomView::Monitor,
+            show_provider_setup: false,
+            provider_setup_provider: String::new(),
         }
     }
 
@@ -416,6 +421,11 @@ impl App {
 
                 if ui.button("⚙️ Provider Settings").clicked() {
                     self.show_provider_settings = true;
+                }
+
+                if ui.button("Setup").clicked() {
+                    self.show_provider_setup = true;
+                    self.provider_setup_provider = self.selected_provider.clone();
                 }
             });
 
@@ -978,6 +988,59 @@ impl eframe::App for App {
                         }
                     });
                 });
+        }
+
+        if self.show_provider_setup {
+            let provider_id = &self.provider_setup_provider;
+            if let Some(info) = get_provider_install_info(provider_id) {
+                let installed = check_provider_installed(provider_id);
+                
+                egui::Window::new(format!("Setup: {}", info.provider_name))
+                    .open(&mut self.show_provider_setup)
+                    .default_width(600.0)
+                    .default_height(400.0)
+                    .show(ctx, |ui| {
+                        ui.heading(format!("{} Setup", info.provider_name));
+                        ui.separator();
+                        
+                        if installed {
+                            ui.colored_label(
+                                egui::Color32::GREEN,
+                                format!("✓ {} is installed", info.provider_name),
+                            );
+                        } else {
+                            ui.colored_label(
+                                egui::Color32::RED,
+                                format!("✗ {} is NOT installed", info.provider_name),
+                            );
+                        }
+                        
+                        ui.separator();
+                        ui.heading("Quick Install");
+                        ui.label(info.simple_description);
+                        ui.horizontal(|ui| {
+                            ui.code(info.simple_command);
+                            if ui.button("Copy").clicked() {
+                                ui.output_mut(|o| o.copied_text = info.simple_command.to_string());
+                            }
+                        });
+                        
+                        ui.separator();
+                        ui.heading("Advanced Install");
+                        ui.label(info.advanced_description);
+                        ui.horizontal(|ui| {
+                            ui.code(info.advanced_command());
+                            if ui.button("Copy").clicked() {
+                                ui.output_mut(|o| o.copied_text = info.advanced_command().to_string());
+                            }
+                        });
+                        
+                        ui.separator();
+                        if ui.button("Refresh Status").clicked() {
+                            // Force re-check
+                        }
+                    });
+            }
         }
 
         ctx.request_repaint();
