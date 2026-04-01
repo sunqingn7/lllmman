@@ -211,6 +211,8 @@ pub trait LlmProvider: Send + Sync {
         settings: &ProviderSettings,
     ) -> Result<std::process::Child>;
 
+    fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String;
+
     fn get_metrics_endpoint(&self, config: &ProviderConfig) -> Option<String> {
         Some(format!("http://{}:{}/stats", config.host, config.port))
     }

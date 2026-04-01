@@ -89,6 +89,11 @@ impl ServerController {
 
         provider.validate_config(config)?;
 
+        // Build and log the full command line
+        let command_line = provider.build_command_line(config, &self.provider_settings);
+        self.log_buffer
+            .push_info(format!("Starting server with command: {}", command_line));
+
         let mut child = provider.start_server(config, &self.provider_settings)?;
 
         let log_buffer = self.log_buffer.clone();

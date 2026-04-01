@@ -78,66 +78,10 @@ impl LlmProvider for VllmProvider {
         config: &ProviderConfig,
         settings: &ProviderSettings,
     ) -> Result<std::process::Child> {
-        let binary = if settings.binary_path.is_empty() {
-            "vllm"
-        } else {
-            &settings.binary_path
-        };
+        let command_line = self.build_command_line(config, settings);
 
         let mut cmd = Command::new("bash");
-        cmd.arg("-c");
-
-        let mut script = String::new();
-        if !settings.env_script.is_empty() {
-            script.push_str(&format!("source \"{}\"\n", settings.env_script));
-        }
-        script.push_str("exec ");
-        script.push_str(&format!("\"{}\" serve ", binary));
-
-        if config.model_path.contains('/') && Path::new(&config.model_path).exists() {
-            script.push_str(&format!("\"{}\" ", config.model_path));
-        } else {
-            script.push_str(&format!("{} ", config.model_path));
-        }
-
-        script.push_str(&format!("--max-model-len {} ", config.context_size));
-        script.push_str(&format!("--port {} ", config.port));
-        script.push_str(&format!("--host {} ", config.host));
-
-        if config.gpu_layers > 0 {
-            script.push_str(&format!(
-                "--gpu-memory-utilization {:.2} ",
-                config.gpu_layers as f32 / 100.0
-            ));
-        }
-
-        if config.threads > 0 {
-            script.push_str(&format!("--max-num-seqs {} ", config.threads));
-        }
-
-        if config.batch_size > 0 {
-            script.push_str(&format!("--max-num-batched-tokens {} ", config.batch_size));
-        }
-
-        if !config.additional_args.is_empty() {
-            for arg in config.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    script.push_str(&format!("{} ", arg));
-                }
-            }
-        }
-
-        if !settings.additional_args.is_empty() {
-            for arg in settings.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    script.push_str(&format!("{} ", arg));
-                }
-            }
-        }
-
-        log::info!("Starting vLLM: {}", script);
-
-        cmd.arg(script);
+        cmd.arg("-c").arg(&command_line);
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -147,15 +91,82 @@ impl LlmProvider for VllmProvider {
 
     fn supported_quantizations(&self) -> Vec<&'static str> {
         vec![
-            "fp16",
             "fp8",
+            "fp8_e4m3",
+            "fp8_e5m2",
             "int8",
             "int4",
-            "awq",
+            "int4_awq",
+            "int4_gptq",
             "gptq",
+            "awq",
             "squeezellm",
-            "marlin",
         ]
+    }
+
+    fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
+        let mut cmd = String::new();
+
+        let binary = if settings.binary_path.is_empty() {
+            "vllm"
+        } else {
+            &settings.binary_path
+        };
+
+        let parts: Vec<&str> = binary.split_whitespace().collect();
+        if parts.len() > 1 {
+            cmd.push_str(&format!("{} ", parts[0]));
+            for part in &parts[1..] {
+                cmd.push_str(&format!("{} ", part));
+            }
+        } else {
+            cmd.push_str(&format!("\"{}\" ", binary));
+        }
+
+        cmd.push_str("serve ");
+
+        if config.model_path.contains('/') && Path::new(&config.model_path).exists() {
+            cmd.push_str(&format!("\"{}\" ", config.model_path));
+        } else {
+            cmd.push_str(&format!("{} ", config.model_path));
+        }
+
+        cmd.push_str(&format!("--max-model-len {} ", config.context_size));
+        cmd.push_str(&format!("--port {} ", config.port));
+        cmd.push_str(&format!("--host {} ", config.host));
+
+        if config.gpu_layers > 0 {
+            cmd.push_str(&format!(
+                "--gpu-memory-utilization {:.2} ",
+                config.gpu_layers as f32 / 100.0
+            ));
+        }
+
+        if config.threads > 0 {
+            cmd.push_str(&format!("--max-num-seqs {} ", config.threads));
+        }
+
+        if config.batch_size > 0 {
+            cmd.push_str(&format!("--max-num-batched-tokens {} ", config.batch_size));
+        }
+
+        if !config.additional_args.is_empty() {
+            for arg in config.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.push_str(&format!("{} ", arg));
+                }
+            }
+        }
+
+        if !settings.additional_args.is_empty() {
+            for arg in settings.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.push_str(&format!("{} ", arg));
+                }
+            }
+        }
+
+        cmd
     }
 
     fn scan_models(&self, path: &str) -> Vec<ModelInfo> {

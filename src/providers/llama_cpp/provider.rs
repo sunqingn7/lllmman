@@ -76,85 +76,10 @@ impl LlmProvider for LlamaCppProvider {
         config: &ProviderConfig,
         settings: &ProviderSettings,
     ) -> Result<std::process::Child> {
-        let binary = if settings.binary_path.is_empty() {
-            "llama-server"
-        } else {
-            &settings.binary_path
-        };
-
-        if settings.env_script.is_empty() {
-            let mut cmd = Command::new(binary);
-            cmd.arg("-m").arg(&config.model_path);
-            cmd.arg("-c").arg(config.context_size.to_string());
-            cmd.arg("-b").arg(config.batch_size.to_string());
-            cmd.arg("-ngl").arg(config.gpu_layers.to_string());
-            cmd.arg("-t").arg(config.threads.to_string());
-            cmd.arg("--port").arg(config.port.to_string());
-            cmd.arg("--host").arg(&config.host);
-            cmd.arg("-np").arg(config.num_prompt_tracking.to_string());
-
-            if !config.cache_type_k.is_empty() {
-                cmd.arg("--cache-type-k").arg(&config.cache_type_k);
-            }
-            if !config.cache_type_v.is_empty() {
-                cmd.arg("--cache-type-v").arg(&config.cache_type_v);
-            }
-
-            for arg in config.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    cmd.arg(arg);
-                }
-            }
-
-            for arg in settings.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    cmd.arg(arg);
-                }
-            }
-
-            cmd.stdin(Stdio::null());
-            cmd.stdout(Stdio::piped());
-            cmd.stderr(Stdio::piped());
-
-            return cmd.spawn().map_err(ProviderError::from);
-        }
+        let command_line = self.build_command_line(config, settings);
 
         let mut cmd = Command::new("bash");
-        cmd.arg("-c");
-
-        let mut script = String::new();
-        script.push_str(&format!("source \"{}\"\n", settings.env_script));
-        script.push_str("exec ");
-        script.push_str(&format!("\"{}\" ", binary));
-        script.push_str(&format!("-m \"{}\" ", config.model_path));
-        script.push_str(&format!("-c {} ", config.context_size));
-        script.push_str(&format!("-b {} ", config.batch_size));
-        script.push_str(&format!("-ngl {} ", config.gpu_layers));
-        script.push_str(&format!("-t {} ", config.threads));
-        script.push_str(&format!("--port {} ", config.port));
-        script.push_str(&format!("--host {} ", config.host));
-        script.push_str(&format!("-np {} ", config.num_prompt_tracking));
-
-        if !config.cache_type_k.is_empty() {
-            script.push_str(&format!("--cache-type-k \"{}\" ", config.cache_type_k));
-        }
-        if !config.cache_type_v.is_empty() {
-            script.push_str(&format!("--cache-type-v \"{}\" ", config.cache_type_v));
-        }
-
-        for arg in config.additional_args.split_whitespace() {
-            if !arg.is_empty() {
-                script.push_str(&format!("{} ", arg));
-            }
-        }
-
-        for arg in settings.additional_args.split_whitespace() {
-            if !arg.is_empty() {
-                script.push_str(&format!("{} ", arg));
-            }
-        }
-
-        cmd.arg(script);
+        cmd.arg("-c").arg(&command_line);
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -166,6 +91,80 @@ impl LlmProvider for LlamaCppProvider {
         vec![
             "f16", "q8_0", "q6_0", "q5_1", "q5_0", "q4_1", "q4_0", "q3_1", "q3_0", "q2_1", "q2_0",
         ]
+    }
+
+    fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
+        let mut cmd = String::new();
+
+        let binary = if settings.binary_path.is_empty() {
+            "llama-server"
+        } else {
+            &settings.binary_path
+        };
+
+        if settings.env_script.is_empty() {
+            cmd.push_str(binary);
+            cmd.push_str(&format!(" -m \"{}\"", config.model_path));
+            cmd.push_str(&format!(" -c {}", config.context_size));
+            cmd.push_str(&format!(" -b {}", config.batch_size));
+            cmd.push_str(&format!(" -ngl {}", config.gpu_layers));
+            cmd.push_str(&format!(" -t {}", config.threads));
+            cmd.push_str(&format!(" --port {}", config.port));
+            cmd.push_str(&format!(" --host {}", config.host));
+            cmd.push_str(&format!(" -np {}", config.num_prompt_tracking));
+
+            if !config.cache_type_k.is_empty() {
+                cmd.push_str(&format!(" --cache-type-k \"{}\"", config.cache_type_k));
+            }
+            if !config.cache_type_v.is_empty() {
+                cmd.push_str(&format!(" --cache-type-v \"{}\"", config.cache_type_v));
+            }
+
+            for arg in config.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.push_str(&format!(" {}", arg));
+                }
+            }
+
+            for arg in settings.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.push_str(&format!(" {}", arg));
+                }
+            }
+        } else {
+            cmd.push_str("bash -c ");
+            cmd.push_str(&format!("source \"{}\" exec ", settings.env_script));
+            cmd.push_str(&format!("\"{}\" ", binary));
+            cmd.push_str(&format!("-m \"{}\" ", config.model_path));
+            cmd.push_str(&format!("-c {} ", config.context_size));
+            cmd.push_str(&format!("-b {} ", config.batch_size));
+            cmd.push_str(&format!("-ngl {} ", config.gpu_layers));
+            cmd.push_str(&format!("-t {} ", config.threads));
+            cmd.push_str(&format!("--port {} ", config.port));
+            cmd.push_str(&format!("--host {} ", config.host));
+            cmd.push_str(&format!("-np {} ", config.num_prompt_tracking));
+
+            if !config.cache_type_k.is_empty() {
+                cmd.push_str(&format!("--cache-type-k \"{}\" ", config.cache_type_k));
+            }
+            if !config.cache_type_v.is_empty() {
+                cmd.push_str(&format!("--cache-type-v \"{}\" ", config.cache_type_v));
+            }
+
+            for arg in config.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.push_str(&format!("{} ", arg));
+                }
+            }
+
+            for arg in settings.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.push_str(&format!("{} ", arg));
+                }
+            }
+        }
+
+        cmd
     }
 
     fn scan_models(&self, path: &str) -> Vec<ModelInfo> {

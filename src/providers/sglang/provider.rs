@@ -78,78 +78,10 @@ impl LlmProvider for SglangProvider {
         config: &ProviderConfig,
         settings: &ProviderSettings,
     ) -> Result<std::process::Child> {
-        let binary = if settings.binary_path.is_empty() {
-            "python3 -m sglang.launch_server"
-        } else {
-            &settings.binary_path
-        };
+        let command_line = self.build_command_line(config, settings);
 
         let mut cmd = Command::new("bash");
-        cmd.arg("-c");
-
-        let mut script = String::new();
-        if !settings.env_script.is_empty() {
-            script.push_str(&format!("source \"{}\"\n", settings.env_script));
-        }
-        script.push_str("exec ");
-
-        let parts: Vec<&str> = binary.split_whitespace().collect();
-        if parts.len() > 1 {
-            script.push_str(&format!("{} ", parts[0]));
-            for part in &parts[1..] {
-                script.push_str(&format!("{} ", part));
-            }
-        } else {
-            script.push_str(&format!("\"{}\" ", binary));
-        }
-
-        if config.model_path.contains('/') && Path::new(&config.model_path).exists() {
-            script.push_str(&format!("--model-path \"{}\" ", config.model_path));
-        } else {
-            script.push_str(&format!("--model-path {} ", config.model_path));
-        }
-
-        script.push_str(&format!("--context-length {} ", config.context_size));
-        script.push_str(&format!("--port {} ", config.port));
-        script.push_str(&format!("--host {} ", config.host));
-
-        if config.gpu_layers > 0 {
-            script.push_str(&format!(
-                "--mem-fraction-static {:.2} ",
-                config.gpu_layers as f32 / 100.0
-            ));
-        }
-
-        if config.threads > 0 {
-            script.push_str(&format!("--tp-size {} ", config.threads));
-        }
-
-        if config.batch_size > 0 {
-            script.push_str(&format!(
-                "--schedule-conservativeness {} ",
-                config.batch_size
-            ));
-        }
-
-        if !config.additional_args.is_empty() {
-            for arg in config.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    script.push_str(&format!("{} ", arg));
-                }
-            }
-        }
-
-        if !settings.additional_args.is_empty() {
-            for arg in settings.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    script.push_str(&format!("{} ", arg));
-                }
-            }
-        }
-
-        log::info!("Starting SGLang: {}", script);
-
-        cmd.arg(script);
+        cmd.arg("-c").arg(&command_line);
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
@@ -168,6 +100,77 @@ impl LlmProvider for SglangProvider {
             "marlin",
             "squeezellm",
         ]
+    }
+
+    fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
+        let mut cmd = String::new();
+
+        let binary = if settings.binary_path.is_empty() {
+            "python3 -m sglang.launch_server"
+        } else {
+            &settings.binary_path
+        };
+
+        if !settings.env_script.is_empty() {
+            cmd.push_str("bash -c ");
+            cmd.push_str(&format!("source \"{}\" exec ", settings.env_script));
+        }
+
+        let parts: Vec<&str> = binary.split_whitespace().collect();
+        if parts.len() > 1 {
+            cmd.push_str(&format!("{} ", parts[0]));
+            for part in &parts[1..] {
+                cmd.push_str(&format!("{} ", part));
+            }
+        } else {
+            cmd.push_str(&format!("\"{}\" ", binary));
+        }
+
+        if config.model_path.contains('/') && Path::new(&config.model_path).exists() {
+            cmd.push_str(&format!("--model-path \"{}\" ", config.model_path));
+        } else {
+            cmd.push_str(&format!("--model-path {} ", config.model_path));
+        }
+
+        cmd.push_str(&format!("--context-length {} ", config.context_size));
+        cmd.push_str(&format!("--port {} ", config.port));
+        cmd.push_str(&format!("--host {} ", config.host));
+
+        if config.gpu_layers > 0 {
+            cmd.push_str(&format!(
+                "--mem-fraction-static {:.2} ",
+                config.gpu_layers as f32 / 100.0
+            ));
+        }
+
+        if config.threads > 0 {
+            cmd.push_str(&format!("--tp-size {} ", config.threads));
+        }
+
+        if config.batch_size > 0 {
+            cmd.push_str(&format!(
+                "--schedule-conservativeness {} ",
+                config.batch_size
+            ));
+        }
+
+        if !config.additional_args.is_empty() {
+            for arg in config.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.push_str(&format!("{} ", arg));
+                }
+            }
+        }
+
+        if !settings.additional_args.is_empty() {
+            for arg in settings.additional_args.split_whitespace() {
+                if !arg.is_empty() {
+                    cmd.push_str(&format!("{} ", arg));
+                }
+            }
+        }
+
+        cmd
     }
 
     fn scan_models(&self, path: &str) -> Vec<ModelInfo> {
