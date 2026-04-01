@@ -49,6 +49,8 @@ pub struct App {
     bottom_view: BottomView,
     show_provider_setup: bool,
     provider_setup_provider: String,
+    show_cmdline_dialog: bool,
+    cmdline_input: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -114,6 +116,8 @@ impl App {
             bottom_view: BottomView::Monitor,
             show_provider_setup: false,
             provider_setup_provider: String::new(),
+            show_cmdline_dialog: false,
+            cmdline_input: String::new(),
         }
     }
 
@@ -382,7 +386,84 @@ impl App {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for (i, model) in filtered.iter().enumerate() {
                             let is_selected = self.selected_model == Some(i);
-                            if ui.selectable_label(is_selected, &model.name).clicked() {
+
+                            let bg_color = if is_selected {
+                                egui::Color32::from_rgb(40, 44, 52)
+                            } else {
+                                egui::Color32::from_rgb(30, 32, 38)
+                            };
+
+                            let text_color = if is_selected {
+                                egui::Color32::from_rgb(130, 170, 255)
+                            } else {
+                                egui::Color32::from_rgb(230, 230, 230)
+                            };
+
+                            let subtext_color = if is_selected {
+                                egui::Color32::from_rgb(140, 150, 170)
+                            } else {
+                                egui::Color32::from_rgb(140, 140, 150)
+                            };
+
+                            ui.add_space(4.0);
+
+                            let card_frame = egui::Frame::none()
+                                .fill(bg_color)
+                                .stroke(egui::Stroke::new(
+                                    1.0,
+                                    if is_selected {
+                                        egui::Color32::from_rgb(48, 63, 159)
+                                    } else {
+                                        egui::Color32::from_rgb(224, 224, 224)
+                                    },
+                                ))
+                                .inner_margin(egui::Margin::same(10.0))
+                                .rounding(8.0);
+
+                            let response = ui.allocate_response(
+                                egui::vec2(ui.available_width(), 52.0),
+                                egui::Sense::click(),
+                            );
+
+                            let frame_shape = card_frame.paint(response.rect);
+                            ui.painter().add(frame_shape);
+
+                            let name_rect = egui::Rect::from_min_size(
+                                response.rect.min + egui::vec2(8.0, 4.0),
+                                egui::vec2(response.rect.width() - 16.0, 20.0),
+                            );
+                            ui.painter().text(
+                                name_rect.min,
+                                egui::Align2::LEFT_TOP,
+                                &model.name,
+                                egui::FontId::new(14.0, egui::FontFamily::Monospace),
+                                text_color,
+                            );
+
+                            let detail_text = format!(
+                                "{:.1} GB  •  {}  •  {}",
+                                model.size_gb,
+                                model.quantization,
+                                match model.model_type {
+                                    crate::models::ModelType::TextOnly => "Text",
+                                    crate::models::ModelType::Tooling => "Tool",
+                                    crate::models::ModelType::Vision => "Vision",
+                                    crate::models::ModelType::Multimodal => "Multi",
+                                }
+                            );
+                            let detail_rect = egui::Rect::from_min_size(
+                                response.rect.min + egui::vec2(8.0, 26.0),
+                                egui::vec2(response.rect.width() - 16.0, 16.0),
+                            );
+                            ui.painter().text(
+                                detail_rect.min,
+                                egui::Align2::LEFT_TOP,
+                                &detail_text,
+                                egui::FontId::new(11.0, egui::FontFamily::Proportional),
+                                subtext_color,
+                            );
+
+                            if response.clicked() {
                                 if let Some(old_i) = self.selected_model {
                                     if let Some(old_model) = filtered.get(old_i) {
                                         save_model_config(&old_model.path, &self.server_config)
@@ -409,6 +490,8 @@ impl App {
                                         fallback.num_prompt_tracking;
                                 }
                             }
+
+                            ui.add_space(4.0);
                         }
                     });
                 });
@@ -468,19 +551,43 @@ impl App {
                 );
                 ui.end_row();
 
-                ui.label("GPU Memory Utilization:");
+                ui.label("GPU Layers:");
                 ui.horizontal(|ui| {
-                    let mut gpu_mem_value = if self.server_config.gpu_layers <= 0 {
-                        90
+                    let mut gpu_layers_val = if self.server_config.gpu_layers < 0 {
+                        -1
                     } else {
                         self.server_config.gpu_layers
                     };
+                    let display_text = if gpu_layers_val < 0 {
+                        "All".to_string()
+                    } else {
+                        gpu_layers_val.to_string()
+                    };
+
+                    if ui.button("All").clicked() {
+                        gpu_layers_val = -1;
+                    }
+
                     ui.add(
-                        egui::DragValue::new(&mut gpu_mem_value)
-                            .clamp_range(1..=100)
-                            .suffix("%"),
+                        egui::DragValue::new(&mut gpu_layers_val)
+                            .clamp_range(0..=200)
+                            .custom_formatter(|n, _| {
+                                let n = n as i32;
+                                if n < 0 {
+                                    "All".to_string()
+                                } else {
+                                    n.to_string()
+                                }
+                            })
+                            .custom_parser(|s| {
+                                if s.eq_ignore_ascii_case("all") || s.eq_ignore_ascii_case("-1") {
+                                    Some(-1.0)
+                                } else {
+                                    s.parse::<i32>().ok().map(|v| v as f64)
+                                }
+                            }),
                     );
-                    self.server_config.gpu_layers = gpu_mem_value;
+                    self.server_config.gpu_layers = gpu_layers_val;
 
                     if ui.button("Auto").clicked() {
                         let model_size_gb =
@@ -501,8 +608,10 @@ impl App {
                         };
 
                         let recommended = recommend_gpu_layers(model_size_gb, total_layers);
-                        self.server_config.gpu_layers = recommended.max(1).min(100);
+                        self.server_config.gpu_layers = recommended.max(0);
                     }
+
+                    ui.label(format!("({})", display_text));
                 });
                 ui.end_row();
 
@@ -556,6 +665,21 @@ impl App {
                     egui::DragValue::new(&mut self.server_config.port).clamp_range(1024..=65535),
                 );
                 ui.end_row();
+
+                ui.label("Additional Args:");
+                ui.vertical(|ui| {
+                    ui.text_edit_singleline(&mut self.server_config.additional_args);
+                });
+                ui.end_row();
+            });
+
+            ui.separator();
+
+            ui.horizontal(|ui| {
+                if ui.button("Example").clicked() {
+                    self.show_cmdline_dialog = true;
+                    self.cmdline_input = String::new();
+                }
             });
 
             ui.separator();
@@ -577,6 +701,7 @@ impl App {
                     }
                     _ => {
                         if ui.button("Start Server").clicked() {
+                            self.log_buffer.clear();
                             if !self.server_config.model_path.is_empty() {
                                 save_model_config(
                                     &self.server_config.model_path,
@@ -675,41 +800,43 @@ impl eframe::App for App {
                     });
                     ui.separator();
 
-                    egui::ScrollArea::vertical()
-                        .stick_to_bottom(true)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            for entry in &entries {
-                                let time_str = entry
-                                    .timestamp
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| {
-                                        let secs = d.as_secs();
-                                        let h = secs / 3600;
-                                        let m = (secs % 3600) / 60;
-                                        let s = secs % 60;
-                                        format!("{:02}:{:02}:{:02}", h, m, s)
-                                    })
-                                    .unwrap_or_default();
+                    ui.push_id("log_window", |ui| {
+                        egui::ScrollArea::vertical()
+                            .stick_to_bottom(true)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                for entry in &entries {
+                                    let time_str = entry
+                                        .timestamp
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| {
+                                            let secs = d.as_secs();
+                                            let h = secs / 3600;
+                                            let m = (secs % 3600) / 60;
+                                            let s = secs % 60;
+                                            format!("{:02}:{:02}:{:02}", h, m, s)
+                                        })
+                                        .unwrap_or_default();
 
-                                let color = match entry.level {
-                                    LogLevel::Error => egui::Color32::RED,
-                                    LogLevel::Warn => egui::Color32::YELLOW,
-                                    LogLevel::Info => egui::Color32::LIGHT_GRAY,
-                                };
+                                    let color = match entry.level {
+                                        LogLevel::Error => egui::Color32::RED,
+                                        LogLevel::Warn => egui::Color32::YELLOW,
+                                        LogLevel::Info => egui::Color32::LIGHT_GRAY,
+                                    };
 
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} [{}] {}",
-                                        time_str,
-                                        entry.level.as_str(),
-                                        entry.message
-                                    ))
-                                    .color(color)
-                                    .monospace(),
-                                );
-                            }
-                        });
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} [{}] {}",
+                                            time_str,
+                                            entry.level.as_str(),
+                                            entry.message
+                                        ))
+                                        .color(color)
+                                        .monospace(),
+                                    );
+                                }
+                            });
+                    });
                 });
         }
 
@@ -925,29 +1052,26 @@ impl eframe::App for App {
                                 let results_guard = search_results_ref.blocking_read();
                                 if !results_guard.is_empty() {
                                     ui.label(format!("Search Results ({}):", results_guard.len()));
-                                    ui.push_id("download_search_results", |ui| {
-                                        egui::ScrollArea::vertical().max_height(200.0).show(
-                                            ui,
-                                            |ui| {
-                                                for result in results_guard.iter() {
-                                                    ui.horizontal(|ui| {
-                                                        if ui.button(&result.name).clicked() {
-                                                            self.download_url = result.id.clone();
-                                                        }
-                                                        ui.label(
-                                                            egui::RichText::new(format!(
-                                                                "{} downloads",
-                                                                result.downloads
-                                                            ))
-                                                            .size(10.0)
-                                                            .color(egui::Color32::from_rgb(
-                                                                140, 140, 150,
-                                                            )),
-                                                        );
-                                                    });
-                                                }
-                                            },
-                                        );
+                                    ui.push_id("search_results", |ui| {
+                                        egui::ScrollArea::vertical().show(ui, |ui| {
+                                            for result in results_guard.iter() {
+                                                ui.horizontal(|ui| {
+                                                    if ui.button(&result.name).clicked() {
+                                                        self.download_url = result.id.clone();
+                                                    }
+                                                    ui.label(
+                                                        egui::RichText::new(format!(
+                                                            "{} downloads",
+                                                            result.downloads
+                                                        ))
+                                                        .size(10.0)
+                                                        .color(egui::Color32::from_rgb(
+                                                            140, 140, 150,
+                                                        )),
+                                                    );
+                                                });
+                                            }
+                                        });
                                     });
                                 }
 
@@ -1072,37 +1196,41 @@ impl eframe::App for App {
                         let manager = self.download_manager.clone();
                         let tasks = manager.blocking_read().get_tasks_sync();
 
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            for task in &tasks {
-                                ui.horizontal(|ui| {
-                                    ui.label(&task.file_name);
-                                    ui.separator();
-                                    match &task.status {
-                                        crate::core::DownloadStatus::Pending => ui.label("Pending"),
-                                        crate::core::DownloadStatus::Downloading => {
-                                            let progress = if task.total_bytes > 0 {
-                                                task.downloaded_bytes as f32
-                                                    / task.total_bytes as f32
-                                            } else {
-                                                0.0
-                                            };
-                                            ui.add(
-                                                egui::ProgressBar::new(progress)
-                                                    .text(&format!("{:.1}%", progress * 100.0)),
-                                            )
+                        ui.push_id("download_queue", |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                for task in &tasks {
+                                    ui.horizontal(|ui| {
+                                        ui.label(&task.file_name);
+                                        ui.separator();
+                                        match &task.status {
+                                            crate::core::DownloadStatus::Pending => {
+                                                ui.label("Pending")
+                                            }
+                                            crate::core::DownloadStatus::Downloading => {
+                                                let progress = if task.total_bytes > 0 {
+                                                    task.downloaded_bytes as f32
+                                                        / task.total_bytes as f32
+                                                } else {
+                                                    0.0
+                                                };
+                                                ui.add(
+                                                    egui::ProgressBar::new(progress)
+                                                        .text(&format!("{:.1}%", progress * 100.0)),
+                                                )
+                                            }
+                                            crate::core::DownloadStatus::Completed => {
+                                                ui.label("Completed")
+                                            }
+                                            crate::core::DownloadStatus::Failed(e) => {
+                                                ui.label(format!("Failed: {}", e))
+                                            }
+                                            crate::core::DownloadStatus::Cancelled => {
+                                                ui.label("Cancelled")
+                                            }
                                         }
-                                        crate::core::DownloadStatus::Completed => {
-                                            ui.label("Completed")
-                                        }
-                                        crate::core::DownloadStatus::Failed(e) => {
-                                            ui.label(format!("Failed: {}", e))
-                                        }
-                                        crate::core::DownloadStatus::Cancelled => {
-                                            ui.label("Cancelled")
-                                        }
-                                    }
-                                });
-                            }
+                                    });
+                                }
+                            });
                         });
                     });
                 });
@@ -1155,6 +1283,79 @@ impl eframe::App for App {
                             }
                         });
                     });
+            }
+        }
+
+        if self.show_cmdline_dialog {
+            let mut close_dialog = false;
+            let mut apply_cmdline = false;
+
+            egui::Window::new("Import from Command Line")
+                .open(&mut self.show_cmdline_dialog)
+                .default_width(600.0)
+                .default_height(300.0)
+                .show(ctx, |ui| {
+                    ui.heading("Import from Command Line");
+                    ui.separator();
+                    ui.label(
+                        "Paste a complete command line. Known parameters will be extracted and filled in.",
+                    );
+                    ui.label(
+                        "Example: llama-server -m /path/to/model.gguf -c 8192 -ngl 35 -t 4 --port 8080",
+                    );
+                    ui.add_space(8.0);
+
+                    ui.text_edit_multiline(&mut self.cmdline_input);
+
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Apply").clicked() && !self.cmdline_input.is_empty() {
+                            apply_cmdline = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            close_dialog = true;
+                        }
+                    });
+                });
+
+            if close_dialog {
+                self.show_cmdline_dialog = false;
+            }
+
+            if apply_cmdline {
+                let parsed = crate::services::parse_command_line(&self.cmdline_input);
+                self.server_config.model_path = parsed.model_path;
+                if parsed.context_size != 4096 {
+                    self.server_config.context_size = parsed.context_size;
+                }
+                if parsed.batch_size != 512 {
+                    self.server_config.batch_size = parsed.batch_size;
+                }
+                if parsed.gpu_layers != -1 {
+                    self.server_config.gpu_layers = parsed.gpu_layers;
+                }
+                if parsed.threads != 8 {
+                    self.server_config.threads = parsed.threads;
+                }
+                if parsed.port != 8080 {
+                    self.server_config.port = parsed.port;
+                }
+                if parsed.host != "0.0.0.0" {
+                    self.server_config.host = parsed.host;
+                }
+                if !parsed.cache_type_k.is_empty() {
+                    self.server_config.cache_type_k = parsed.cache_type_k;
+                }
+                if !parsed.cache_type_v.is_empty() {
+                    self.server_config.cache_type_v = parsed.cache_type_v;
+                }
+                if parsed.num_prompt_tracking != 1 {
+                    self.server_config.num_prompt_tracking = parsed.num_prompt_tracking;
+                }
+                if !parsed.additional_args.is_empty() {
+                    self.server_config.additional_args = parsed.additional_args;
+                }
+                self.show_cmdline_dialog = false;
             }
         }
 
