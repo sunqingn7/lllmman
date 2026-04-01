@@ -185,7 +185,7 @@ impl TuiApp {
                 match key.code {
                     // Quit
                     crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
-                        std::process::exit(0);
+                        return;
                     }
 
                     // Panel navigation
@@ -459,7 +459,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &TuiApp) {
         .split(area);
 
     let provider_text = format!("Provider: {}", app.selected_provider);
-    let help_text = "[Tab] switch | [/] search | [Ctrl+P] settings | [Enter] select/start";
+    let help_text = "[Tab]switch [/]search [Ctrl+P]settings [Enter]start [q]quit";
 
     f.render_widget(
         Paragraph::new("LLLMMan").style(
@@ -487,7 +487,7 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &mut TuiApp) {
         .filtered_models
         .iter()
         .skip(app.scroll_offset)
-        .take(15)
+        .take(area.height.saturating_sub(2) as usize)
         .enumerate()
         .map(|(i, model)| {
             let idx = app.scroll_offset + i;
@@ -531,7 +531,10 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &mut TuiApp) {
     let config_content = vec![
         Line::from(vec![
             Span::raw("Model: "),
-            Span::raw(&app.server_config.model_path),
+            Span::raw(truncate_path(
+                &app.server_config.model_path,
+                chunks[1].width as usize,
+            )),
         ]),
         Line::from(vec![
             Span::raw("Context: "),
@@ -691,4 +694,17 @@ fn render_provider_settings_overlay(f: &mut Frame, size: Rect, app: &TuiApp) {
 
     let para = Paragraph::new(content).block(block);
     f.render_widget(para, area);
+}
+
+fn truncate_path(path: &str, max_width: usize) -> String {
+    if path.len() <= max_width {
+        return path.to_string();
+    }
+    let file_name = path.split('/').last().unwrap_or(path);
+    if file_name.len() + 4 <= max_width {
+        format!(".../{}", file_name)
+    } else {
+        let start = file_name.len() + 4 - max_width;
+        format!("...{}", &file_name[start..])
+    }
 }
