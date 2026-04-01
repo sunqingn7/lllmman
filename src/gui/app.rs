@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use eframe::egui;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -301,49 +302,53 @@ impl App {
 
         if self.bottom_view == BottomView::Log {
             let entries = self.log_buffer.get_entries();
-            egui::ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if entries.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No logs yet. Start a server to see output here.")
+            ui.push_id("log_panel", |ui| {
+                egui::ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if entries.is_empty() {
+                            ui.label(
+                                egui::RichText::new(
+                                    "No logs yet. Start a server to see output here.",
+                                )
                                 .color(egui::Color32::GRAY)
                                 .italics(),
-                        );
-                    } else {
-                        for entry in &entries {
-                            let time_str = entry
-                                .timestamp
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| {
-                                    let secs = d.as_secs();
-                                    let h = secs / 3600;
-                                    let m = (secs % 3600) / 60;
-                                    let s = secs % 60;
-                                    format!("{:02}:{:02}:{:02}", h, m, s)
-                                })
-                                .unwrap_or_default();
-
-                            let color = match entry.level {
-                                LogLevel::Error => egui::Color32::RED,
-                                LogLevel::Warn => egui::Color32::YELLOW,
-                                LogLevel::Info => egui::Color32::LIGHT_GRAY,
-                            };
-
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} [{}] {}",
-                                    time_str,
-                                    entry.level.as_str(),
-                                    entry.message
-                                ))
-                                .color(color)
-                                .monospace(),
                             );
+                        } else {
+                            for entry in &entries {
+                                let time_str = entry
+                                    .timestamp
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| {
+                                        let secs = d.as_secs();
+                                        let h = secs / 3600;
+                                        let m = (secs % 3600) / 60;
+                                        let s = secs % 60;
+                                        format!("{:02}:{:02}:{:02}", h, m, s)
+                                    })
+                                    .unwrap_or_default();
+
+                                let color = match entry.level {
+                                    LogLevel::Error => egui::Color32::RED,
+                                    LogLevel::Warn => egui::Color32::YELLOW,
+                                    LogLevel::Info => egui::Color32::LIGHT_GRAY,
+                                };
+
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} [{}] {}",
+                                        time_str,
+                                        entry.level.as_str(),
+                                        entry.message
+                                    ))
+                                    .color(color)
+                                    .monospace(),
+                                );
+                            }
                         }
-                    }
-                });
+                    });
+            });
         }
     }
 
@@ -373,36 +378,39 @@ impl App {
                     })
                     .collect();
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (i, model) in filtered.iter().enumerate() {
-                        let is_selected = self.selected_model == Some(i);
-                        if ui.selectable_label(is_selected, &model.name).clicked() {
-                            if let Some(old_i) = self.selected_model {
-                                if let Some(old_model) = filtered.get(old_i) {
-                                    save_model_config(&old_model.path, &self.server_config).ok();
+                ui.push_id("model_list", |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for (i, model) in filtered.iter().enumerate() {
+                            let is_selected = self.selected_model == Some(i);
+                            if ui.selectable_label(is_selected, &model.name).clicked() {
+                                if let Some(old_i) = self.selected_model {
+                                    if let Some(old_model) = filtered.get(old_i) {
+                                        save_model_config(&old_model.path, &self.server_config)
+                                            .ok();
+                                    }
+                                }
+
+                                self.selected_model = Some(i);
+                                self.server_config.model_path = model.path.clone();
+
+                                if let Some(config) = load_model_config(&model.path) {
+                                    self.server_config = config;
+                                    self.server_config.model_path = model.path.clone();
+                                } else if let Some(fallback) = get_fallback_config() {
+                                    self.server_config.context_size = fallback.context_size;
+                                    self.server_config.batch_size = fallback.batch_size;
+                                    self.server_config.gpu_layers = fallback.gpu_layers;
+                                    self.server_config.threads = fallback.threads;
+                                    self.server_config.port = fallback.port;
+                                    self.server_config.host = fallback.host;
+                                    self.server_config.cache_type_k = fallback.cache_type_k;
+                                    self.server_config.cache_type_v = fallback.cache_type_v;
+                                    self.server_config.num_prompt_tracking =
+                                        fallback.num_prompt_tracking;
                                 }
                             }
-
-                            self.selected_model = Some(i);
-                            self.server_config.model_path = model.path.clone();
-
-                            if let Some(config) = load_model_config(&model.path) {
-                                self.server_config = config;
-                                self.server_config.model_path = model.path.clone();
-                            } else if let Some(fallback) = get_fallback_config() {
-                                self.server_config.context_size = fallback.context_size;
-                                self.server_config.batch_size = fallback.batch_size;
-                                self.server_config.gpu_layers = fallback.gpu_layers;
-                                self.server_config.threads = fallback.threads;
-                                self.server_config.port = fallback.port;
-                                self.server_config.host = fallback.host;
-                                self.server_config.cache_type_k = fallback.cache_type_k;
-                                self.server_config.cache_type_v = fallback.cache_type_v;
-                                self.server_config.num_prompt_tracking =
-                                    fallback.num_prompt_tracking;
-                            }
                         }
-                    }
+                    });
                 });
             });
 
@@ -853,224 +861,249 @@ impl eframe::App for App {
                 .default_width(600.0)
                 .default_height(500.0)
                 .show(ctx, |ui| {
-                    ui.heading("Download Model");
-                    ui.separator();
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        ui.heading("Download Model");
+                        ui.separator();
 
-                    ui.label("Source:");
-                    egui::ComboBox::from_id_source("download_source")
-                        .selected_text(&self.download_source_type)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(
-                                &mut self.download_source_type,
-                                "HuggingFace".to_string(),
-                                "HuggingFace",
-                            );
-                            ui.selectable_value(
-                                &mut self.download_source_type,
-                                "Direct URL".to_string(),
-                                "Direct URL",
-                            );
-                            ui.selectable_value(
-                                &mut self.download_source_type,
-                                "GitHub Release".to_string(),
-                                "GitHub Release",
-                            );
-                        });
-
-                    ui.separator();
-
-                    match self.download_source_type.as_str() {
-                        "HuggingFace" => {
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut self.search_query)
-                                        .hint_text("Search models..."),
+                        ui.label("Source:");
+                        egui::ComboBox::from_id_source("download_source")
+                            .selected_text(&self.download_source_type)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut self.download_source_type,
+                                    "HuggingFace".to_string(),
+                                    "HuggingFace",
                                 );
-                                if ui.button("Search").clicked() && !self.search_query.is_empty() {
-                                    self.is_searching = true;
-                                    let query = self.search_query.clone();
-                                    let search_results = self.search_results.clone();
-                                    let app_handle = ctx.clone();
+                                ui.selectable_value(
+                                    &mut self.download_source_type,
+                                    "Direct URL".to_string(),
+                                    "Direct URL",
+                                );
+                                ui.selectable_value(
+                                    &mut self.download_source_type,
+                                    "GitHub Release".to_string(),
+                                    "GitHub Release",
+                                );
+                            });
+
+                        ui.separator();
+
+                        match self.download_source_type.as_str() {
+                            "HuggingFace" => {
+                                ui.horizontal(|ui| {
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.search_query)
+                                            .hint_text("Search models..."),
+                                    );
+                                    if ui.button("Search").clicked()
+                                        && !self.search_query.is_empty()
+                                    {
+                                        self.is_searching = true;
+                                        let query = self.search_query.clone();
+                                        let search_results = self.search_results.clone();
+                                        let app_handle = ctx.clone();
+                                        std::thread::spawn(move || {
+                                            let downloader = HuggingFaceDownloader::new();
+                                            match downloader.search_sync(&query) {
+                                                Ok(results) => {
+                                                    let mut results_lock =
+                                                        search_results.blocking_write();
+                                                    *results_lock = results;
+                                                }
+                                                Err(e) => {
+                                                    log::error!("Search failed: {}", e);
+                                                }
+                                            }
+                                            app_handle.request_repaint();
+                                        });
+                                    }
+                                });
+
+                                ui.separator();
+
+                                let search_results_ref = self.search_results.clone();
+                                let results_guard = search_results_ref.blocking_read();
+                                if !results_guard.is_empty() {
+                                    ui.label(format!("Search Results ({}):", results_guard.len()));
+                                    ui.push_id("download_search_results", |ui| {
+                                        egui::ScrollArea::vertical().max_height(200.0).show(
+                                            ui,
+                                            |ui| {
+                                                for result in results_guard.iter() {
+                                                    ui.horizontal(|ui| {
+                                                        if ui.button(&result.name).clicked() {
+                                                            self.download_url = result.id.clone();
+                                                        }
+                                                        ui.label(
+                                                            egui::RichText::new(format!(
+                                                                "{} downloads",
+                                                                result.downloads
+                                                            ))
+                                                            .size(10.0)
+                                                            .color(egui::Color32::from_rgb(
+                                                                140, 140, 150,
+                                                            )),
+                                                        );
+                                                    });
+                                                }
+                                            },
+                                        );
+                                    });
+                                }
+
+                                ui.separator();
+                                ui.label("Or enter model ID directly:");
+                                ui.text_edit_singleline(&mut self.download_url);
+                                ui.label("Example: TheBloke/Mistral-7B-Instruct-v0.1-GGUF");
+
+                                if ui.button("Start Download").clicked()
+                                    && !self.download_url.is_empty()
+                                {
+                                    let model_id = self.download_url.clone();
+                                    let manager = self.download_manager.clone();
+
                                     std::thread::spawn(move || {
                                         let downloader = HuggingFaceDownloader::new();
-                                        match downloader.search_sync(&query) {
-                                            Ok(results) => {
-                                                let mut results_lock =
-                                                    search_results.blocking_write();
-                                                *results_lock = results;
+                                        match downloader.list_files_sync(&model_id) {
+                                            Ok(files) => {
+                                                let manager = manager.blocking_read();
+                                                for file in files {
+                                                    let source = ModelSource::HuggingFace {
+                                                        repo_id: model_id.clone(),
+                                                    };
+                                                    let id = manager
+                                                        .add_task_sync(source, file.path.clone());
+                                                    log::info!("Added download task: {}", id);
+                                                }
                                             }
                                             Err(e) => {
-                                                log::error!("Search failed: {}", e);
-                                            }
-                                        }
-                                        app_handle.request_repaint();
-                                    });
-                                }
-                            });
-
-                            ui.separator();
-
-                            let search_results_ref = self.search_results.clone();
-                            let results_guard = search_results_ref.blocking_read();
-                            if !results_guard.is_empty() {
-                                ui.label("Search Results:");
-                                egui::ScrollArea::vertical()
-                                    .max_height(150.0)
-                                    .show(ui, |ui| {
-                                        for result in results_guard.iter() {
-                                            if ui.button(&result.name).clicked() {
-                                                self.download_url = result.id.clone();
+                                                log::error!("Failed to list files: {}", e);
                                             }
                                         }
                                     });
-                            }
-
-                            ui.separator();
-                            ui.label("Or enter model ID directly:");
-                            ui.text_edit_singleline(&mut self.download_url);
-                            ui.label("Example: TheBloke/Mistral-7B-Instruct-v0.1-GGUF");
-
-                            if ui.button("Start Download").clicked()
-                                && !self.download_url.is_empty()
-                            {
-                                let model_id = self.download_url.clone();
-                                let manager = self.download_manager.clone();
-
-                                std::thread::spawn(move || {
-                                    let downloader = HuggingFaceDownloader::new();
-                                    match downloader.list_files_sync(&model_id) {
-                                        Ok(files) => {
-                                            let manager = manager.blocking_read();
-                                            for file in files {
-                                                let source = ModelSource::HuggingFace {
-                                                    repo_id: model_id.clone(),
-                                                };
-                                                let id = manager
-                                                    .add_task_sync(source, file.path.clone());
-                                                log::info!("Added download task: {}", id);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            log::error!("Failed to list files: {}", e);
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                        "Direct URL" => {
-                            ui.label("Enter direct download URL:");
-                            ui.text_edit_singleline(&mut self.download_url);
-
-                            if ui.button("Start Download").clicked()
-                                && !self.download_url.is_empty()
-                            {
-                                let url = self.download_url.clone();
-                                let manager = self.download_manager.clone();
-
-                                std::thread::spawn(move || {
-                                    let downloader = DirectUrlDownloader::new();
-                                    match downloader.fetch_headers_sync(&url) {
-                                        Ok(headers) => {
-                                            let file_name = headers.file_name.clone();
-                                            let content_length = headers.content_length;
-                                            let source =
-                                                ModelSource::DirectUrl { url: url.clone() };
-                                            let manager = manager.blocking_read();
-                                            let _id =
-                                                manager.add_task_sync(source, file_name.clone());
-                                            log::info!(
-                                                "Started download: {} ({} bytes)",
-                                                file_name,
-                                                content_length
-                                            );
-                                        }
-                                        Err(e) => {
-                                            log::error!("Failed to fetch headers: {}", e);
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                        "GitHub Release" => {
-                            ui.horizontal(|ui| {
-                                ui.label("Owner:");
-                                ui.text_edit_singleline(&mut self.download_github_owner);
-                            });
-                            ui.horizontal(|ui| {
-                                ui.label("Repository:");
-                                ui.text_edit_singleline(&mut self.download_github_repo);
-                            });
-
-                            if ui.button("Fetch Release").clicked()
-                                && !self.download_github_owner.is_empty()
-                                && !self.download_github_repo.is_empty()
-                            {
-                                let owner = self.download_github_owner.clone();
-                                let repo = self.download_github_repo.clone();
-                                let manager = self.download_manager.clone();
-
-                                std::thread::spawn(move || {
-                                    let downloader = GitHubReleaseDownloader::new();
-                                    match downloader.get_latest_release_sync(&owner, &repo) {
-                                        Ok(release) => {
-                                            log::info!(
-                                                "Found release: {} with {} assets",
-                                                release.tag,
-                                                release.assets.len()
-                                            );
-                                            let manager = manager.blocking_read();
-                                            for asset in release.assets {
-                                                let source = ModelSource::GitHubRelease {
-                                                    owner: owner.clone(),
-                                                    repo: repo.clone(),
-                                                    tag: release.tag.clone(),
-                                                    asset_name: asset.name.clone(),
-                                                };
-                                                let _id = manager.add_task_sync(source, asset.name);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            log::error!("Failed to fetch release: {}", e);
-                                        }
-                                    }
-                                });
-                            }
-                        }
-                        _ => {}
-                    }
-
-                    ui.separator();
-                    ui.heading("Download Queue");
-
-                    let manager = self.download_manager.clone();
-                    let tasks = manager.blocking_read().get_tasks_sync();
-
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        for task in &tasks {
-                            ui.horizontal(|ui| {
-                                ui.label(&task.file_name);
-                                ui.separator();
-                                match &task.status {
-                                    crate::core::DownloadStatus::Pending => ui.label("Pending"),
-                                    crate::core::DownloadStatus::Downloading => {
-                                        let progress = if task.total_bytes > 0 {
-                                            task.downloaded_bytes as f32 / task.total_bytes as f32
-                                        } else {
-                                            0.0
-                                        };
-                                        ui.add(
-                                            egui::ProgressBar::new(progress)
-                                                .text(&format!("{:.1}%", progress * 100.0)),
-                                        )
-                                    }
-                                    crate::core::DownloadStatus::Completed => ui.label("Completed"),
-                                    crate::core::DownloadStatus::Failed(e) => {
-                                        ui.label(format!("Failed: {}", e))
-                                    }
-                                    crate::core::DownloadStatus::Cancelled => ui.label("Cancelled"),
                                 }
-                            });
+                            }
+                            "Direct URL" => {
+                                ui.label("Enter direct download URL:");
+                                ui.text_edit_singleline(&mut self.download_url);
+
+                                if ui.button("Start Download").clicked()
+                                    && !self.download_url.is_empty()
+                                {
+                                    let url = self.download_url.clone();
+                                    let manager = self.download_manager.clone();
+
+                                    std::thread::spawn(move || {
+                                        let downloader = DirectUrlDownloader::new();
+                                        match downloader.fetch_headers_sync(&url) {
+                                            Ok(headers) => {
+                                                let file_name = headers.file_name.clone();
+                                                let content_length = headers.content_length;
+                                                let source =
+                                                    ModelSource::DirectUrl { url: url.clone() };
+                                                let manager = manager.blocking_read();
+                                                let _id = manager
+                                                    .add_task_sync(source, file_name.clone());
+                                                log::info!(
+                                                    "Started download: {} ({} bytes)",
+                                                    file_name,
+                                                    content_length
+                                                );
+                                            }
+                                            Err(e) => {
+                                                log::error!("Failed to fetch headers: {}", e);
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            "GitHub Release" => {
+                                ui.horizontal(|ui| {
+                                    ui.label("Owner:");
+                                    ui.text_edit_singleline(&mut self.download_github_owner);
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.label("Repository:");
+                                    ui.text_edit_singleline(&mut self.download_github_repo);
+                                });
+
+                                if ui.button("Fetch Release").clicked()
+                                    && !self.download_github_owner.is_empty()
+                                    && !self.download_github_repo.is_empty()
+                                {
+                                    let owner = self.download_github_owner.clone();
+                                    let repo = self.download_github_repo.clone();
+                                    let manager = self.download_manager.clone();
+
+                                    std::thread::spawn(move || {
+                                        let downloader = GitHubReleaseDownloader::new();
+                                        match downloader.get_latest_release_sync(&owner, &repo) {
+                                            Ok(release) => {
+                                                log::info!(
+                                                    "Found release: {} with {} assets",
+                                                    release.tag,
+                                                    release.assets.len()
+                                                );
+                                                let manager = manager.blocking_read();
+                                                for asset in release.assets {
+                                                    let source = ModelSource::GitHubRelease {
+                                                        owner: owner.clone(),
+                                                        repo: repo.clone(),
+                                                        tag: release.tag.clone(),
+                                                        asset_name: asset.name.clone(),
+                                                    };
+                                                    let _id =
+                                                        manager.add_task_sync(source, asset.name);
+                                                }
+                                            }
+                                            Err(e) => {
+                                                log::error!("Failed to fetch release: {}", e);
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+                            _ => {}
                         }
+
+                        ui.separator();
+                        ui.heading("Download Queue");
+
+                        let manager = self.download_manager.clone();
+                        let tasks = manager.blocking_read().get_tasks_sync();
+
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for task in &tasks {
+                                ui.horizontal(|ui| {
+                                    ui.label(&task.file_name);
+                                    ui.separator();
+                                    match &task.status {
+                                        crate::core::DownloadStatus::Pending => ui.label("Pending"),
+                                        crate::core::DownloadStatus::Downloading => {
+                                            let progress = if task.total_bytes > 0 {
+                                                task.downloaded_bytes as f32
+                                                    / task.total_bytes as f32
+                                            } else {
+                                                0.0
+                                            };
+                                            ui.add(
+                                                egui::ProgressBar::new(progress)
+                                                    .text(&format!("{:.1}%", progress * 100.0)),
+                                            )
+                                        }
+                                        crate::core::DownloadStatus::Completed => {
+                                            ui.label("Completed")
+                                        }
+                                        crate::core::DownloadStatus::Failed(e) => {
+                                            ui.label(format!("Failed: {}", e))
+                                        }
+                                        crate::core::DownloadStatus::Cancelled => {
+                                            ui.label("Cancelled")
+                                        }
+                                    }
+                                });
+                            }
+                        });
                     });
                 });
         }

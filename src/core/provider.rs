@@ -5,6 +5,7 @@ use thiserror::Error;
 use crate::models::ModelType;
 
 #[derive(Error, Debug)]
+#[allow(dead_code)]
 pub enum ProviderError {
     #[error("Invalid config: {0}")]
     InvalidConfig(String),

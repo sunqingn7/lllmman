@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub mod log_buffer;
 pub mod provider;
 pub mod registry;

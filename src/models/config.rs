@@ -95,6 +95,7 @@ pub struct ModelConfigEntry {
     pub cache_type_k: String,
     pub cache_type_v: String,
     pub num_prompt_tracking: u32,
+    pub additional_args: String,
 }
 
 impl Default for ModelConfigEntry {
@@ -109,6 +110,7 @@ impl Default for ModelConfigEntry {
             cache_type_k: "q4_0".to_string(),
             cache_type_v: "q4_0".to_string(),
             num_prompt_tracking: 1,
+            additional_args: String::new(),
         }
     }
 }

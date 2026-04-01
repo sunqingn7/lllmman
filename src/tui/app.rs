@@ -6,15 +6,15 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame, Terminal,
 };
-use std::sync::Arc;
 
 use crate::core::{
     LlmProvider, ModelInfo, ProviderConfig, ProviderRegistry, ProviderSettings, ServerController,
 };
 use crate::models::{AppSettings, GpuInfo, ServerStatus};
 use crate::services::{
-    config_persistence, detect_running_servers, get_system_stats, gpu_detector,
-    load_provider_settings_for, parse_server_args, save_provider_settings_for,
+    config_persistence, detect_running_servers, get_fallback_config, get_system_stats,
+    gpu_detector, load_model_config, load_provider_settings_for, parse_server_args,
+    save_model_config, save_provider_settings_for,
 };
 
 enum InputMode {
@@ -38,6 +38,7 @@ enum FocusPanel {
 pub struct TuiApp {
     models: Vec<ModelInfo>,
     filtered_models: Vec<ModelInfo>,
+    #[allow(dead_code)]
     gpus: Vec<GpuInfo>,
     server_config: ProviderConfig,
     server_controller: ServerController,
@@ -45,6 +46,7 @@ pub struct TuiApp {
     settings: AppSettings,
     selected_model_index: Option<usize>,
     selected_provider: String,
+    available_providers: Vec<(String, String)>,
     input_mode: InputMode,
     focus_panel: FocusPanel,
     search_query: String,
@@ -57,11 +59,14 @@ impl TuiApp {
         let settings = config_persistence::load_settings();
         let gpus = gpu_detector::detect_gpus();
 
-        let available_providers = ProviderRegistry::list();
+        let available_providers: Vec<(String, String)> = ProviderRegistry::list()
+            .into_iter()
+            .map(|(id, name)| (id.to_string(), name.to_string()))
+            .collect();
         let selected_provider = if available_providers.is_empty() {
             "llama.cpp".to_string()
         } else {
-            available_providers[0].0.to_string()
+            available_providers[0].0.clone()
         };
 
         let provider = ProviderRegistry::get(&selected_provider).unwrap_or_else(|| {
@@ -70,6 +75,19 @@ impl TuiApp {
         });
 
         let mut server_config = provider.get_config_template();
+
+        // Load saved model config from GUI as fallback
+        if let Some(saved_config) = get_fallback_config() {
+            server_config.context_size = saved_config.context_size;
+            server_config.batch_size = saved_config.batch_size;
+            server_config.gpu_layers = saved_config.gpu_layers;
+            server_config.threads = saved_config.threads;
+            server_config.port = saved_config.port;
+            server_config.host = saved_config.host;
+            server_config.cache_type_k = saved_config.cache_type_k;
+            server_config.cache_type_v = saved_config.cache_type_v;
+            server_config.num_prompt_tracking = saved_config.num_prompt_tracking;
+        }
 
         // Detect running servers and populate config
         let running_servers = detect_running_servers();
@@ -83,7 +101,7 @@ impl TuiApp {
                 );
                 let detected_config = parse_server_args(&server.provider_id, &server.command_line);
 
-                // Merge detected config (only use detected values if current is default/empty)
+                // Merge detected config (running server takes priority over saved config)
                 if server_config.model_path.is_empty() {
                     server_config.model_path = detected_config.model_path;
                 }
@@ -139,6 +157,7 @@ impl TuiApp {
             settings,
             selected_model_index: None,
             selected_provider,
+            available_providers,
             input_mode: InputMode::Normal,
             focus_panel: FocusPanel::Models,
             search_query: String::new(),
@@ -160,6 +179,33 @@ impl TuiApp {
         };
     }
 
+    fn switch_provider(&mut self, provider_id: &str) {
+        if let Some(provider) = ProviderRegistry::get(provider_id) {
+            self.selected_provider = provider_id.to_string();
+            self.server_config = provider.get_config_template();
+            self.provider_settings = load_provider_settings_for(provider_id);
+            self.server_controller = ServerController::new();
+            self.server_controller.set_provider(provider.clone());
+            self.server_controller
+                .set_provider_settings(self.provider_settings.clone());
+
+            let mut models = Vec::new();
+            for dir in &self.settings.scan_directories {
+                let found = provider.scan_models(dir);
+                models.extend(found);
+            }
+            for dir in &provider.default_model_directories() {
+                let found = provider.scan_models(dir);
+                models.extend(found);
+            }
+            self.models = models;
+            self.filtered_models = self.models.clone();
+            self.selected_model_index = None;
+            self.scroll_offset = 0;
+            self.status_message = format!("Switched to {}", provider_id);
+        }
+    }
+
     fn start_server(&mut self) {
         let provider = ProviderRegistry::get(&self.selected_provider).unwrap_or_else(|| {
             let p = crate::providers::LlamaCppProvider::new();
@@ -179,13 +225,13 @@ impl TuiApp {
         }
     }
 
-    fn handle_input(&mut self, key: crossterm::event::KeyEvent) {
+    fn handle_input(&mut self, key: crossterm::event::KeyEvent) -> bool {
         match &self.input_mode {
             InputMode::Normal => {
                 match key.code {
                     // Quit
                     crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
-                        return;
+                        return true;
                     }
 
                     // Panel navigation
@@ -272,12 +318,46 @@ impl TuiApp {
                         }
                     }
 
+                    // Cycle providers
+                    crossterm::event::KeyCode::Char('c') => {
+                        if key
+                            .modifiers
+                            .contains(crossterm::event::KeyModifiers::CONTROL)
+                        {
+                            let current_idx = self
+                                .available_providers
+                                .iter()
+                                .position(|(id, _)| id == &self.selected_provider)
+                                .unwrap_or(0);
+                            let next_idx = (current_idx + 1) % self.available_providers.len();
+                            let next_provider = self.available_providers[next_idx].0.clone();
+                            self.switch_provider(&next_provider);
+                        }
+                    }
+
                     // Select model / Start server
                     crossterm::event::KeyCode::Enter => {
                         if self.focus_panel == FocusPanel::Models {
                             if let Some(idx) = self.selected_model_index {
                                 if let Some(model) = self.filtered_models.get(idx) {
                                     self.server_config.model_path = model.path.clone();
+                                    // Load saved config for this model if it exists
+                                    if let Some(saved) = load_model_config(&model.path) {
+                                        self.server_config.context_size = saved.context_size;
+                                        self.server_config.batch_size = saved.batch_size;
+                                        self.server_config.gpu_layers = saved.gpu_layers;
+                                        self.server_config.threads = saved.threads;
+                                        self.server_config.port = saved.port;
+                                        self.server_config.host = saved.host.clone();
+                                        self.server_config.cache_type_k =
+                                            saved.cache_type_k.clone();
+                                        self.server_config.cache_type_v =
+                                            saved.cache_type_v.clone();
+                                        self.server_config.num_prompt_tracking =
+                                            saved.num_prompt_tracking;
+                                        self.server_config.additional_args =
+                                            saved.additional_args.clone();
+                                    }
                                     self.status_message = format!("Selected: {}", model.name);
                                 }
                             }
@@ -287,6 +367,14 @@ impl TuiApp {
                             if matches!(status, ServerStatus::Running) {
                                 self.stop_server();
                             } else {
+                                // Save current config before starting
+                                if !self.server_config.model_path.is_empty() {
+                                    save_model_config(
+                                        &self.server_config.model_path,
+                                        &self.server_config,
+                                    )
+                                    .ok();
+                                }
                                 self.start_server();
                             }
                         }
@@ -380,6 +468,7 @@ impl TuiApp {
                 _ => {}
             },
         }
+        false
     }
 }
 
@@ -442,10 +531,13 @@ fn run_inner(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
         // Non-blocking event poll with 100ms timeout
         if crossterm::event::poll(std::time::Duration::from_millis(100))? {
             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
-                app.handle_input(key);
+                if app.handle_input(key) {
+                    break;
+                }
             }
         }
     }
+    Ok(())
 }
 
 fn render_header(f: &mut Frame, area: Rect, app: &TuiApp) {
@@ -559,6 +651,13 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &mut TuiApp) {
         Line::from(vec![
             Span::raw("Host: "),
             Span::raw(&app.server_config.host),
+        ]),
+        Line::from(vec![
+            Span::raw("Args: "),
+            Span::raw(truncate_path(
+                &app.server_config.additional_args,
+                chunks[1].width as usize,
+            )),
         ]),
         Line::from(""),
         Line::from(vec![

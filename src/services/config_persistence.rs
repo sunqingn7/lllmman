@@ -86,6 +86,7 @@ pub fn save_model_config(model_path: &str, config: &ProviderConfig) -> Result<()
             cache_type_k: config.cache_type_k.clone(),
             cache_type_v: config.cache_type_v.clone(),
             num_prompt_tracking: config.num_prompt_tracking,
+            additional_args: config.additional_args.clone(),
         },
     );
     configs.last_model_path = Some(model_path.to_string());
@@ -108,6 +109,7 @@ pub fn load_model_config(model_path: &str) -> Option<ProviderConfig> {
             cache_type_k: entry.cache_type_k.clone(),
             cache_type_v: entry.cache_type_v.clone(),
             num_prompt_tracking: entry.num_prompt_tracking,
+            additional_args: entry.additional_args.clone(),
             ..Default::default()
         });
     }
@@ -131,6 +133,7 @@ pub fn get_fallback_config() -> Option<ProviderConfig> {
                 cache_type_k: entry.cache_type_k.clone(),
                 cache_type_v: entry.cache_type_v.clone(),
                 num_prompt_tracking: entry.num_prompt_tracking,
+                additional_args: entry.additional_args.clone(),
                 ..Default::default()
             });
         }
