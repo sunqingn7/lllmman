@@ -686,20 +686,37 @@ impl eframe::App for App {
                 }
                 ui.separator();
                 let stats = get_system_stats();
-                let vram_percent = if stats.vram_total_mb > 0 {
-                    (stats.vram_used_mb as f32 / stats.vram_total_mb as f32) * 100.0
-                } else {
-                    0.0
-                };
-                ui.label(egui::RichText::new("VRAM: ").color(egui::Color32::WHITE));
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}/{} MB",
-                        stats.vram_used_mb, stats.vram_total_mb
-                    ))
-                    .color(usage_color(vram_percent)),
-                );
-                ui.separator();
+                if stats.gpu_vram_usage.len() > 1 {
+                    for (index, used, total) in &stats.gpu_vram_usage {
+                        let percent = if *total > 0 {
+                            (*used as f32 / *total as f32) * 100.0
+                        } else {
+                            0.0
+                        };
+                        ui.label(
+                            egui::RichText::new(format!("VRAM{}:", index + 1))
+                                .color(egui::Color32::WHITE),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("{}/{} MB", used, total))
+                                .color(usage_color(percent)),
+                        );
+                        ui.separator();
+                    }
+                } else if !stats.gpu_vram_usage.is_empty() {
+                    let (_, used, total) = stats.gpu_vram_usage[0];
+                    let vram_percent = if total > 0 {
+                        (used as f32 / total as f32) * 100.0
+                    } else {
+                        0.0
+                    };
+                    ui.label(egui::RichText::new("VRAM: ").color(egui::Color32::WHITE));
+                    ui.label(
+                        egui::RichText::new(format!("{}/{} MB", used, total))
+                            .color(usage_color(vram_percent)),
+                    );
+                    ui.separator();
+                }
                 let ram_percent = if stats.ram_total_mb > 0 {
                     (stats.ram_used_mb as f32 / stats.ram_total_mb as f32) * 100.0
                 } else {

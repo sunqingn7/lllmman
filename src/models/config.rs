@@ -31,6 +31,7 @@ pub struct MonitorStats {
     pub active_connections: u32,
     pub gpu_temperatures: Vec<crate::models::GpuTemperature>,
     pub cpu_temperature: Option<f32>,
+    pub gpu_vram_usage: Vec<(u32, u32, u32)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

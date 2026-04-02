@@ -20,6 +20,12 @@ pub fn get_system_stats() -> MonitorStats {
         (0, 0)
     };
 
+    let gpu_vram_usage: Vec<(u32, u32, u32)> = gpus
+        .iter()
+        .zip(gpu_usage.iter())
+        .map(|(gpu, usage)| (gpu.index, usage.used_vram_mb, gpu.total_vram_mb))
+        .collect();
+
     let gpu_temperatures: Vec<GpuTemperature> = gpus
         .iter()
         .map(|gpu| GpuTemperature {
@@ -41,6 +47,7 @@ pub fn get_system_stats() -> MonitorStats {
         active_connections: 0,
         gpu_temperatures,
         cpu_temperature,
+        gpu_vram_usage,
     }
 }
 
