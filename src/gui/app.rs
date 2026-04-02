@@ -435,6 +435,7 @@ impl App {
                                     self.server_config.cache_type_v = fallback.cache_type_v;
                                     self.server_config.num_prompt_tracking =
                                         fallback.num_prompt_tracking;
+                                    self.server_config.additional_args = fallback.additional_args;
                                 }
                             }
 
