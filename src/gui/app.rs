@@ -690,37 +690,44 @@ impl eframe::App for App {
                 }
                 ui.separator();
                 let stats = get_system_stats();
-                if stats.gpu_vram_usage.len() > 1 {
-                    for (index, used, total) in &stats.gpu_vram_usage {
-                        let percent = if *total > 0 {
-                            (*used as f32 / *total as f32) * 100.0
-                        } else {
-                            0.0
-                        };
-                        ui.label(
-                            egui::RichText::new(format!("VRAM{}:", index + 1))
-                                .color(egui::Color32::WHITE),
-                        );
-                        ui.label(
-                            egui::RichText::new(format!("{}/{} MB", used, total))
-                                .color(usage_color(percent)),
-                        );
-                        ui.separator();
-                    }
-                } else if !stats.gpu_vram_usage.is_empty() {
-                    let (_, used, total) = stats.gpu_vram_usage[0];
+
+                for gpu_info in &self.gpus {
+                    let index = gpu_info.index as usize;
+                    let (used, total) = if index < stats.gpu_vram_usage.len() {
+                        (stats.gpu_vram_usage[index].1, stats.gpu_vram_usage[index].2)
+                    } else {
+                        (0, 0)
+                    };
                     let vram_percent = if total > 0 {
                         (used as f32 / total as f32) * 100.0
                     } else {
                         0.0
                     };
-                    ui.label(egui::RichText::new("VRAM: ").color(egui::Color32::WHITE));
+
+                    let temp = if index < stats.gpu_temperatures.len() {
+                        stats.gpu_temperatures[index].temperature_c.unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+
                     ui.label(
-                        egui::RichText::new(format!("{}/{} MB", used, total))
+                        egui::RichText::new(format!("GPU{}", gpu_info.index))
+                            .color(egui::Color32::WHITE),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(" ({})", gpu_info.name))
+                            .color(egui::Color32::GRAY),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(" {}/{} MB", used, total))
                             .color(usage_color(vram_percent)),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(" {:.0}°C", temp)).color(temp_color(temp)),
                     );
                     ui.separator();
                 }
+
                 let ram_percent = if stats.ram_total_mb > 0 {
                     (stats.ram_used_mb as f32 / stats.ram_total_mb as f32) * 100.0
                 } else {
@@ -732,6 +739,7 @@ impl eframe::App for App {
                         .color(usage_color(ram_percent)),
                 );
                 ui.separator();
+
                 ui.label(egui::RichText::new("CPU: ").color(egui::Color32::WHITE));
                 ui.label(
                     egui::RichText::new(format!("{:.1}%", stats.cpu_percent))
@@ -741,22 +749,6 @@ impl eframe::App for App {
                     ui.label(
                         egui::RichText::new(format!(" ({:.0}°C)", cpu_temp))
                             .color(temp_color(cpu_temp)),
-                    );
-                }
-                ui.separator();
-                for gpu_temp in &stats.gpu_temperatures {
-                    let temp_val = gpu_temp.temperature_c.unwrap_or(0.0);
-                    ui.label(
-                        egui::RichText::new(format!("GPU{}", gpu_temp.index))
-                            .color(egui::Color32::WHITE),
-                    );
-                    ui.label(
-                        egui::RichText::new(format!(" ({})", gpu_temp.name))
-                            .color(egui::Color32::GRAY),
-                    );
-                    ui.label(
-                        egui::RichText::new(format!(" {:.0}°C", temp_val))
-                            .color(temp_color(temp_val)),
                     );
                 }
                 if self.server_controller.get_status() == crate::models::ServerStatus::Running
