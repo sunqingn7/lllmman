@@ -118,13 +118,21 @@ impl LlmProvider for LlamaCppProvider {
             } else {
                 cmd.push_str(&format!(" -m \"{}\"", config.model_path));
             }
-            cmd.push_str(&format!(" -c {}", config.context_size));
-            cmd.push_str(&format!(" -b {}", config.batch_size));
+            if config.context_size > 0 {
+                cmd.push_str(&format!(" -c {}", config.context_size));
+            }
+            if config.batch_size > 0 {
+                cmd.push_str(&format!(" -b {}", config.batch_size));
+            }
             cmd.push_str(&format!(" -ngl {}", config.gpu_layers));
-            cmd.push_str(&format!(" -t {}", config.threads));
+            if config.threads > 0 {
+                cmd.push_str(&format!(" -t {}", config.threads));
+            }
             cmd.push_str(&format!(" --port {}", config.port));
             cmd.push_str(&format!(" --host {}", config.host));
-            cmd.push_str(&format!(" -np {}", config.num_prompt_tracking));
+            if config.num_prompt_tracking > 0 {
+                cmd.push_str(&format!(" -np {}", config.num_prompt_tracking));
+            }
 
             if !config.cache_type_k.is_empty() {
                 cmd.push_str(&format!(" --cache-type-k \"{}\"", config.cache_type_k));
@@ -153,13 +161,21 @@ impl LlmProvider for LlamaCppProvider {
             } else {
                 cmd.push_str(&format!("-m \"{}\" ", config.model_path));
             }
-            cmd.push_str(&format!("-c {} ", config.context_size));
-            cmd.push_str(&format!("-b {} ", config.batch_size));
+            if config.context_size > 0 {
+                cmd.push_str(&format!("-c {} ", config.context_size));
+            }
+            if config.batch_size > 0 {
+                cmd.push_str(&format!("-b {} ", config.batch_size));
+            }
             cmd.push_str(&format!("-ngl {} ", config.gpu_layers));
-            cmd.push_str(&format!("-t {} ", config.threads));
+            if config.threads > 0 {
+                cmd.push_str(&format!("-t {} ", config.threads));
+            }
             cmd.push_str(&format!("--port {} ", config.port));
             cmd.push_str(&format!("--host {} ", config.host));
-            cmd.push_str(&format!("-np {} ", config.num_prompt_tracking));
+            if config.num_prompt_tracking > 0 {
+                cmd.push_str(&format!("-np {} ", config.num_prompt_tracking));
+            }
 
             if !config.cache_type_k.is_empty() {
                 cmd.push_str(&format!("--cache-type-k \"{}\" ", config.cache_type_k));

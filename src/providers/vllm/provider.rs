@@ -140,7 +140,9 @@ impl LlmProvider for VllmProvider {
             cmd.push_str(&format!("{} ", config.model_path));
         }
 
-        cmd.push_str(&format!("--max-model-len {} ", config.context_size));
+        if config.context_size > 0 {
+            cmd.push_str(&format!("--max-model-len {} ", config.context_size));
+        }
         cmd.push_str(&format!("--port {} ", config.port));
         cmd.push_str(&format!("--host {} ", config.host));
 

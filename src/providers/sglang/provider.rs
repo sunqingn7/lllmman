@@ -141,7 +141,9 @@ impl LlmProvider for SglangProvider {
             cmd.push_str(&format!("--model-path {} ", config.model_path));
         }
 
-        cmd.push_str(&format!("--context-length {} ", config.context_size));
+        if config.context_size > 0 {
+            cmd.push_str(&format!("--context-length {} ", config.context_size));
+        }
         cmd.push_str(&format!("--port {} ", config.port));
         cmd.push_str(&format!("--host {} ", config.host));
 

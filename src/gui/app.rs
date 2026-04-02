@@ -526,7 +526,6 @@ impl App {
 
                     ui.add(
                         egui::DragValue::new(&mut gpu_layers_val)
-                            .clamp_range(0..=200)
                             .custom_formatter(|n, _| {
                                 let n = n as i32;
                                 if n < 0 {
@@ -536,7 +535,7 @@ impl App {
                                 }
                             })
                             .custom_parser(|s| {
-                                if s.eq_ignore_ascii_case("all") || s.eq_ignore_ascii_case("-1") {
+                                if s.eq_ignore_ascii_case("all") {
                                     Some(-1.0)
                                 } else {
                                     s.parse::<i32>().ok().map(|v| v as f64)
