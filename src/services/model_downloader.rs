@@ -235,26 +235,30 @@ impl HuggingFaceDownloader {
     }
 
     pub fn list_files_sync(&self, model_id: &str) -> ProviderResult<Vec<ModelFile>> {
-        let api_url = format!(
-            "https://huggingface.co/api/models/{}/tree/main?recursive=true",
-            model_id
-        );
+        let api_url = format!("https://huggingface.co/api/models/{}", model_id);
 
         let response = reqwest::blocking::get(&api_url)
             .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
 
-        let files: Vec<serde_json::Value> = response
+        let json: serde_json::Value = response
             .json()
             .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
 
+        let siblings = json["siblings"]
+            .as_array()
+            .ok_or_else(|| ProviderError::NetworkError("No siblings found".to_string()))?;
+
         let mut result = Vec::new();
-        for item in files {
-            if item["type"].as_str() != Some("file") {
+        for item in siblings {
+            let path = item["rfilename"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            let size = item["size"].as_u64().unwrap_or(0);
+
+            if path.is_empty() {
                 continue;
             }
-
-            let path = item["path"].as_str().unwrap_or("").to_string();
-            let size = item["size"].as_u64().unwrap_or(0);
 
             result.push(ModelFile {
                 path,
