@@ -159,6 +159,7 @@ impl ServerController {
 
         if let Some(mut child) = self.process.take() {
             let _ = child.kill();
+            let _ = child.wait();
             *self.status.lock().unwrap() = ServerStatus::Stopped;
             killed = true;
         }
@@ -170,6 +171,7 @@ impl ServerController {
                 .output()
                 .is_ok()
             {
+                let _ = Command::new("wait").arg(pid.to_string()).output();
                 self.log_buffer
                     .push_info(format!("Killed external server with PID {}", pid));
                 self.external_pid = None;
@@ -188,8 +190,16 @@ impl ServerController {
 
     pub fn is_running(&mut self) -> bool {
         if let Some(ref mut child) = self.process {
-            if child.try_wait().ok().flatten().is_none() {
-                return true;
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    self.process = None;
+                    return false;
+                }
+                Ok(None) => return true,
+                Err(_) => {
+                    self.process = None;
+                    return false;
+                }
             }
         }
 
