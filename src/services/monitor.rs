@@ -7,8 +7,8 @@ pub fn get_system_stats() -> MonitorStats {
     sys.refresh_all();
 
     let cpu = sys.cpus().first().map(|c| c.cpu_usage()).unwrap_or(0.0);
-    let total_ram = sys.total_memory() as u32;
-    let used_ram = sys.used_memory() as u32;
+    let total_ram = sys.total_memory() as u64;
+    let used_ram = sys.used_memory() as u64;
 
     let gpus = gpu_detector::detect_gpus();
     let gpu_usage = gpu_detector::get_all_gpu_usage();
@@ -34,8 +34,8 @@ pub fn get_system_stats() -> MonitorStats {
     MonitorStats {
         vram_used_mb: vram_used,
         vram_total_mb: vram_total,
-        ram_used_mb: used_ram / (1024 * 1024),
-        ram_total_mb: total_ram / (1024 * 1024),
+        ram_used_mb: (used_ram / (1024 * 1024)) as u32,
+        ram_total_mb: (total_ram / (1024 * 1024)) as u32,
         cpu_percent: cpu,
         tokens_per_second: 0.0,
         active_connections: 0,
