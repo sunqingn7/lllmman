@@ -564,7 +564,7 @@ impl App {
                         };
 
                         let recommended = recommend_gpu_layers(model_size_gb, total_layers);
-                        self.server_config.gpu_layers = recommended.max(0);
+                        self.server_config.gpu_layers = recommended;
                     }
 
                     ui.label(format!("({})", display_text));
