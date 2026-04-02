@@ -52,6 +52,7 @@ pub struct App {
     provider_installed_cache: Option<(String, bool)>,
     show_cmdline_dialog: bool,
     cmdline_input: String,
+    started_hf_model: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -124,6 +125,7 @@ impl App {
             provider_installed_cache: None,
             show_cmdline_dialog: false,
             cmdline_input: String::new(),
+            started_hf_model: None,
         }
     }
 
@@ -670,6 +672,10 @@ impl App {
                             self.server_controller
                                 .start(&provider, &self.server_config)
                                 .ok();
+                            if !self.server_config.huggingface_id.is_empty() {
+                                self.started_hf_model =
+                                    Some(self.server_config.huggingface_id.clone());
+                            }
                         }
                     }
                 }
@@ -757,6 +763,66 @@ impl eframe::App for App {
                 if self.server_controller.get_status() == crate::models::ServerStatus::Running
                     && self.frame_counter % 300 == 0
                 {
+                    let mut new_hf_model: Option<String> = None;
+                    if let Some(hf_id) = &self.started_hf_model {
+                        let hf_id_clone = hf_id.clone();
+                        let provider = self.get_current_provider();
+                        for dir in &self.settings.scan_directories {
+                            let found = provider.scan_models(dir);
+                            for model in found {
+                                if model.path.contains(&hf_id_clone)
+                                    || model
+                                        .name
+                                        .contains(hf_id_clone.split('/').last().unwrap_or(""))
+                                {
+                                    if !self.models.iter().any(|m| m.path == model.path) {
+                                        self.models.push(model.clone());
+                                    }
+                                    if self.server_config.huggingface_id == hf_id_clone {
+                                        self.server_config.model_path = self
+                                            .models
+                                            .iter()
+                                            .find(|m| m.path == model.path)
+                                            .map(|m| m.path.clone())
+                                            .unwrap_or_default();
+                                        self.server_config.huggingface_id = String::new();
+                                        new_hf_model = Some(hf_id_clone.clone());
+                                    }
+                                }
+                            }
+                        }
+                        let provider_dirs = provider.default_model_directories();
+                        for dir in &provider_dirs {
+                            let found = provider.scan_models(dir);
+                            for model in found {
+                                if model.path.contains(&hf_id_clone)
+                                    || model
+                                        .name
+                                        .contains(hf_id_clone.split('/').last().unwrap_or(""))
+                                {
+                                    if !self.models.iter().any(|m| m.path == model.path) {
+                                        self.models.push(model.clone());
+                                    }
+                                    if self.server_config.huggingface_id == hf_id_clone {
+                                        self.server_config.model_path = self
+                                            .models
+                                            .iter()
+                                            .find(|m| m.path == model.path)
+                                            .map(|m| m.path.clone())
+                                            .unwrap_or_default();
+                                        self.server_config.huggingface_id = String::new();
+                                        new_hf_model = Some(hf_id_clone.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let Some(cleared) = new_hf_model {
+                        if self.started_hf_model.as_ref() == Some(&cleared) {
+                            self.started_hf_model = None;
+                        }
+                    }
+
                     if let Some(server_stats) = crate::services::fetch_server_stats(
                         &self.server_config.host,
                         self.server_config.port,
@@ -1125,6 +1191,7 @@ impl eframe::App for App {
                                     let hf_id = self.download_url.clone();
                                     self.server_config.huggingface_id = hf_id;
                                     self.server_config.model_path = String::new();
+                                    self.server_config.gpu_layers = -1;
                                 }
                             }
                             "Direct URL" => {
