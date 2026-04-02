@@ -49,6 +49,7 @@ pub struct App {
     bottom_view: BottomView,
     show_provider_setup: bool,
     provider_setup_provider: String,
+    provider_installed_cache: Option<(String, bool)>,
     show_cmdline_dialog: bool,
     cmdline_input: String,
 }
@@ -120,6 +121,7 @@ impl App {
             bottom_view: BottomView::Log,
             show_provider_setup: false,
             provider_setup_provider: String::new(),
+            provider_installed_cache: None,
             show_cmdline_dialog: false,
             cmdline_input: String::new(),
         }
@@ -1259,9 +1261,28 @@ impl eframe::App for App {
 
         if self.show_provider_setup {
             let provider_id = &self.provider_setup_provider;
-            if let Some(info) = get_provider_install_info(provider_id) {
-                let installed = check_provider_installed(provider_id);
 
+            let installed = if let Some((cached_id, cached_result)) = &self.provider_installed_cache
+            {
+                if cached_id == provider_id {
+                    Some(*cached_result)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let installed = match installed {
+                Some(result) => result,
+                None => {
+                    let result = check_provider_installed(provider_id);
+                    self.provider_installed_cache = Some((provider_id.clone(), result));
+                    result
+                }
+            };
+
+            if let Some(info) = get_provider_install_info(provider_id) {
                 egui::Window::new(format!("Setup: {}", info.provider_name))
                     .open(&mut self.show_provider_setup)
                     .default_width(600.0)
