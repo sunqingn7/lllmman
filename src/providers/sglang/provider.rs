@@ -281,6 +281,7 @@ impl LlmProvider for SglangProvider {
 
     fn parse_server_config(&self, cmd_line: &str) -> ProviderConfig {
         let mut config = ProviderConfig::default();
+        let mut additional_args = Vec::new();
 
         let args: Vec<&str> = cmd_line.split_whitespace().collect();
         let mut i = 0;
@@ -333,9 +334,24 @@ impl LlmProvider for SglangProvider {
                         i += 1;
                     }
                 }
-                _ => {}
+                _ => {
+                    // Collect unknown arguments
+                    if arg.starts_with('-') {
+                        if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                            additional_args.push(arg);
+                            additional_args.push(args[i + 1]);
+                            i += 1;
+                        } else {
+                            additional_args.push(arg);
+                        }
+                    }
+                }
             }
             i += 1;
+        }
+
+        if !additional_args.is_empty() {
+            config.additional_args = additional_args.join(" ");
         }
 
         config
