@@ -102,6 +102,7 @@ impl Default for ProviderSettings {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub model_path: String,
+    pub huggingface_id: String,
     pub context_size: u32,
     pub batch_size: u32,
     pub gpu_layers: i32,
@@ -120,6 +121,7 @@ impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
             model_path: String::new(),
+            huggingface_id: String::new(),
             context_size: 4096,
             batch_size: 512,
             gpu_layers: -1,

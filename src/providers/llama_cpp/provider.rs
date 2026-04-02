@@ -104,7 +104,11 @@ impl LlmProvider for LlamaCppProvider {
 
         if settings.env_script.is_empty() {
             cmd.push_str(binary);
-            cmd.push_str(&format!(" -m \"{}\"", config.model_path));
+            if !config.huggingface_id.is_empty() {
+                cmd.push_str(&format!(" -hf \"{}\"", config.huggingface_id));
+            } else {
+                cmd.push_str(&format!(" -m \"{}\"", config.model_path));
+            }
             cmd.push_str(&format!(" -c {}", config.context_size));
             cmd.push_str(&format!(" -b {}", config.batch_size));
             cmd.push_str(&format!(" -ngl {}", config.gpu_layers));
@@ -135,7 +139,11 @@ impl LlmProvider for LlamaCppProvider {
             cmd.push_str("bash -c ");
             cmd.push_str(&format!("source \"{}\" exec ", settings.env_script));
             cmd.push_str(&format!("\"{}\" ", binary));
-            cmd.push_str(&format!("-m \"{}\" ", config.model_path));
+            if !config.huggingface_id.is_empty() {
+                cmd.push_str(&format!("-hf \"{}\" ", config.huggingface_id));
+            } else {
+                cmd.push_str(&format!("-m \"{}\" ", config.model_path));
+            }
             cmd.push_str(&format!("-c {} ", config.context_size));
             cmd.push_str(&format!("-b {} ", config.batch_size));
             cmd.push_str(&format!("-ngl {} ", config.gpu_layers));

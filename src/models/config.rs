@@ -87,6 +87,7 @@ pub struct ModelConfigs {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelConfigEntry {
+    pub huggingface_id: String,
     pub context_size: u32,
     pub batch_size: u32,
     pub gpu_layers: i32,
@@ -102,6 +103,7 @@ pub struct ModelConfigEntry {
 impl Default for ModelConfigEntry {
     fn default() -> Self {
         Self {
+            huggingface_id: String::new(),
             context_size: 4096,
             batch_size: 512,
             gpu_layers: -1,

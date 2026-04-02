@@ -488,6 +488,10 @@ impl App {
                 ui.text_edit_singleline(&mut self.server_config.model_path);
                 ui.end_row();
 
+                ui.label("HuggingFace ID:");
+                ui.text_edit_singleline(&mut self.server_config.huggingface_id);
+                ui.end_row();
+
                 ui.label("Context Size:");
                 ui.add(
                     egui::DragValue::new(&mut self.server_config.context_size)
@@ -1120,31 +1124,12 @@ impl eframe::App for App {
                                 ui.text_edit_singleline(&mut self.download_url);
                                 ui.label("Example: TheBloke/Mistral-7B-Instruct-v0.1-GGUF");
 
-                                if ui.button("Start Download").clicked()
+                                if ui.button("Set as HuggingFace Model").clicked()
                                     && !self.download_url.is_empty()
                                 {
-                                    let model_id = self.download_url.clone();
-                                    let manager = self.download_manager.clone();
-
-                                    std::thread::spawn(move || {
-                                        let downloader = HuggingFaceDownloader::new();
-                                        match downloader.list_files_sync(&model_id) {
-                                            Ok(files) => {
-                                                let manager = manager.blocking_read();
-                                                for file in files {
-                                                    let source = ModelSource::HuggingFace {
-                                                        repo_id: model_id.clone(),
-                                                    };
-                                                    let id = manager
-                                                        .add_task_sync(source, file.path.clone());
-                                                    log::info!("Added download task: {}", id);
-                                                }
-                                            }
-                                            Err(e) => {
-                                                log::error!("Failed to list files: {}", e);
-                                            }
-                                        }
-                                    });
+                                    let hf_id = self.download_url.clone();
+                                    self.server_config.huggingface_id = hf_id;
+                                    self.server_config.model_path = String::new();
                                 }
                             }
                             "Direct URL" => {
