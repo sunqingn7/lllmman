@@ -55,7 +55,6 @@ pub struct App {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BottomView {
-    Monitor,
     Log,
 }
 
@@ -78,6 +77,11 @@ impl App {
         });
 
         let (models, server_config) = Self::build_for_provider(&selected_provider, &settings);
+
+        let selected_model = models.iter().position(|m| {
+            m.path == server_config.model_path || m.path.contains(&server_config.model_path)
+        });
+
         let provider_settings = load_provider_settings_for(&selected_provider);
 
         let provider = Self::get_provider_static(&selected_provider);
@@ -93,7 +97,7 @@ impl App {
             server_controller,
             provider_settings,
             settings: settings.clone(),
-            selected_model: None,
+            selected_model,
             selected_provider,
             show_download: false,
             show_gpu_settings: false,
@@ -113,7 +117,7 @@ impl App {
             download_github_repo: String::new(),
             is_searching: false,
             frame_counter: 0,
-            bottom_view: BottomView::Monitor,
+            bottom_view: BottomView::Log,
             show_provider_setup: false,
             provider_setup_provider: String::new(),
             show_cmdline_dialog: false,
@@ -229,12 +233,6 @@ impl App {
     fn render_bottom_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui
-                .selectable_label(self.bottom_view == BottomView::Monitor, "Monitor")
-                .clicked()
-            {
-                self.bottom_view = BottomView::Monitor;
-            }
-            if ui
                 .selectable_label(self.bottom_view == BottomView::Log, "Log")
                 .clicked()
             {
@@ -242,61 +240,10 @@ impl App {
             }
             ui.separator();
 
-            if self.bottom_view == BottomView::Monitor {
-                let stats = get_system_stats();
-                ui.label(format!(
-                    "VRAM: {}/{} MB",
-                    stats.vram_used_mb, stats.vram_total_mb
-                ));
-                ui.separator();
-                ui.label(format!(
-                    "RAM: {}/{} MB",
-                    stats.ram_used_mb, stats.ram_total_mb
-                ));
-                ui.separator();
-                let cpu_temp_str = stats
-                    .cpu_temperature
-                    .map(|t| format!(" ({:.0}°C)", t))
-                    .unwrap_or_default();
-                ui.label(format!("CPU: {:.1}%{}", stats.cpu_percent, cpu_temp_str));
-                ui.separator();
-
-                for gpu_temp in &stats.gpu_temperatures {
-                    let temp_str = gpu_temp
-                        .temperature_c
-                        .map(|t| format!("{:.0}°C", t))
-                        .unwrap_or_else(|| "N/A".to_string());
-                    ui.label(format!(
-                        "GPU{} ({}): {}",
-                        gpu_temp.index, gpu_temp.name, temp_str
-                    ));
-                }
-                if !stats.gpu_temperatures.is_empty() {
-                    ui.separator();
-                }
-
-                if self.server_controller.get_status() == crate::models::ServerStatus::Running
-                    && self.frame_counter % 300 == 0
-                {
-                    if let Some(server_stats) = crate::services::fetch_server_stats(
-                        &self.server_config.host,
-                        self.server_config.port,
-                    ) {
-                        let tps = server_stats
-                            .time_per_token
-                            .map(|t| if t > 0.0 { 1000.0 / t } else { 0.0 })
-                            .unwrap_or(0.0);
-                        ui.label(format!("TPS: {:.1}", tps));
-                        ui.separator();
-                        ui.label(format!("Queue: {}", server_stats.queue_size.unwrap_or(0)));
-                    }
-                }
-            } else {
-                let entries = self.log_buffer.get_entries();
-                ui.label(format!("{} entries", entries.len()));
-                if ui.button("Clear").clicked() {
-                    self.log_buffer.clear();
-                }
+            let entries = self.log_buffer.get_entries();
+            ui.label(format!("{} entries", entries.len()));
+            if ui.button("Clear").clicked() {
+                self.log_buffer.clear();
             }
 
             self.frame_counter = self.frame_counter.wrapping_add(1);
@@ -733,6 +680,53 @@ impl eframe::App for App {
                 ui.separator();
                 if ui.button("GPU Settings").clicked() {
                     self.show_gpu_settings = true;
+                }
+                ui.separator();
+                let stats = get_system_stats();
+                ui.label(format!(
+                    "VRAM: {}/{} MB",
+                    stats.vram_used_mb, stats.vram_total_mb
+                ));
+                ui.separator();
+                ui.label(format!(
+                    "RAM: {}/{} MB",
+                    stats.ram_used_mb, stats.ram_total_mb
+                ));
+                ui.separator();
+                let cpu_temp_str = stats
+                    .cpu_temperature
+                    .map(|t| format!(" ({:.0}°C)", t))
+                    .unwrap_or_default();
+                ui.label(format!("CPU: {:.1}%{}", stats.cpu_percent, cpu_temp_str));
+                ui.separator();
+                for gpu_temp in &stats.gpu_temperatures {
+                    let temp_str = gpu_temp
+                        .temperature_c
+                        .map(|t| format!("{:.0}°C", t))
+                        .unwrap_or_else(|| "N/A".to_string());
+                    ui.label(format!(
+                        "GPU{} ({}): {}",
+                        gpu_temp.index, gpu_temp.name, temp_str
+                    ));
+                }
+                if self.server_controller.get_status() == crate::models::ServerStatus::Running
+                    && self.frame_counter % 300 == 0
+                {
+                    if let Some(server_stats) = crate::services::fetch_server_stats(
+                        &self.server_config.host,
+                        self.server_config.port,
+                    ) {
+                        let tps = server_stats
+                            .time_per_token
+                            .map(|t| if t > 0.0 { 1000.0 / t } else { 0.0 })
+                            .unwrap_or(0.0);
+                        ui.separator();
+                        ui.label(format!(
+                            "Tokens/s: {:.1} | Queue: {}",
+                            tps,
+                            server_stats.queue_size.unwrap_or(0)
+                        ));
+                    }
                 }
             });
         });
