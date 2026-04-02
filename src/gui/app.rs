@@ -683,31 +683,57 @@ impl eframe::App for App {
                 }
                 ui.separator();
                 let stats = get_system_stats();
-                ui.label(format!(
-                    "VRAM: {}/{} MB",
-                    stats.vram_used_mb, stats.vram_total_mb
-                ));
+                let vram_percent = if stats.vram_total_mb > 0 {
+                    (stats.vram_used_mb as f32 / stats.vram_total_mb as f32) * 100.0
+                } else {
+                    0.0
+                };
+                ui.label(egui::RichText::new("VRAM: ").color(egui::Color32::WHITE));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}/{} MB",
+                        stats.vram_used_mb, stats.vram_total_mb
+                    ))
+                    .color(usage_color(vram_percent)),
+                );
                 ui.separator();
-                ui.label(format!(
-                    "RAM: {}/{} MB",
-                    stats.ram_used_mb, stats.ram_total_mb
-                ));
+                let ram_percent = if stats.ram_total_mb > 0 {
+                    (stats.ram_used_mb as f32 / stats.ram_total_mb as f32) * 100.0
+                } else {
+                    0.0
+                };
+                ui.label(egui::RichText::new("RAM: ").color(egui::Color32::WHITE));
+                ui.label(
+                    egui::RichText::new(format!("{}/{} MB", stats.ram_used_mb, stats.ram_total_mb))
+                        .color(usage_color(ram_percent)),
+                );
                 ui.separator();
-                let cpu_temp_str = stats
-                    .cpu_temperature
-                    .map(|t| format!(" ({:.0}°C)", t))
-                    .unwrap_or_default();
-                ui.label(format!("CPU: {:.1}%{}", stats.cpu_percent, cpu_temp_str));
+                ui.label(egui::RichText::new("CPU: ").color(egui::Color32::WHITE));
+                ui.label(
+                    egui::RichText::new(format!("{:.1}%", stats.cpu_percent))
+                        .color(usage_color(stats.cpu_percent)),
+                );
+                if let Some(cpu_temp) = stats.cpu_temperature {
+                    ui.label(
+                        egui::RichText::new(format!(" ({:.0}°C)", cpu_temp))
+                            .color(temp_color(cpu_temp)),
+                    );
+                }
                 ui.separator();
                 for gpu_temp in &stats.gpu_temperatures {
-                    let temp_str = gpu_temp
-                        .temperature_c
-                        .map(|t| format!("{:.0}°C", t))
-                        .unwrap_or_else(|| "N/A".to_string());
-                    ui.label(format!(
-                        "GPU{} ({}): {}",
-                        gpu_temp.index, gpu_temp.name, temp_str
-                    ));
+                    let temp_val = gpu_temp.temperature_c.unwrap_or(0.0);
+                    ui.label(
+                        egui::RichText::new(format!("GPU{}", gpu_temp.index))
+                            .color(egui::Color32::WHITE),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(" ({})", gpu_temp.name))
+                            .color(egui::Color32::GRAY),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(" {:.0}°C", temp_val))
+                            .color(temp_color(temp_val)),
+                    );
                 }
                 if self.server_controller.get_status() == crate::models::ServerStatus::Running
                     && self.frame_counter % 300 == 0
@@ -1354,5 +1380,25 @@ impl eframe::App for App {
         }
 
         ctx.request_repaint();
+    }
+}
+
+fn temp_color(temp: f32) -> egui::Color32 {
+    if temp < 50.0 {
+        egui::Color32::from_rgb(0, 200, 0)
+    } else if temp < 80.0 {
+        egui::Color32::from_rgb(255, 200, 0)
+    } else {
+        egui::Color32::from_rgb(255, 50, 50)
+    }
+}
+
+fn usage_color(percent: f32) -> egui::Color32 {
+    if percent < 50.0 {
+        egui::Color32::from_rgb(0, 200, 0)
+    } else if percent < 80.0 {
+        egui::Color32::from_rgb(255, 200, 0)
+    } else {
+        egui::Color32::from_rgb(255, 50, 50)
     }
 }
