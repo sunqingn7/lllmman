@@ -645,14 +645,18 @@ impl App {
                 match status {
                     crate::models::ServerStatus::Running => {
                         if ui.button("Stop Server").clicked() {
-                            if !self.server_config.model_path.is_empty() {
-                                save_model_config(
-                                    &self.server_config.model_path,
-                                    &self.server_config,
-                                )
-                                .ok();
+                            if !self.server_config.model_path.is_empty()
+                                || !self.server_config.huggingface_id.is_empty()
+                            {
+                                let key = if !self.server_config.huggingface_id.is_empty() {
+                                    self.server_config.huggingface_id.clone()
+                                } else {
+                                    self.server_config.model_path.clone()
+                                };
+                                save_model_config(&key, &self.server_config).ok();
                             }
                             self.server_controller.stop().ok();
+                            self.started_hf_model = None;
                         }
                     }
                     _ => {
