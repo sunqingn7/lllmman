@@ -1,5 +1,7 @@
 use std::process::Command;
 
+use crate::services::config_persistence::load_provider_settings_for;
+
 pub struct ProviderInstallInfo {
     pub provider_name: &'static str,
     pub simple_command: &'static str,
@@ -49,11 +51,38 @@ pub fn check_provider_installed(provider_id: &str) -> bool {
         None => return false,
     };
 
-    let output = Command::new(info.check_command)
-        .args(info.check_args)
-        .output();
+    let settings = load_provider_settings_for(provider_id);
 
-    match output {
+    let check_binary = if settings.binary_path.is_empty() {
+        info.check_command.to_string()
+    } else {
+        settings.binary_path.clone()
+    };
+
+    let result = if !settings.env_script.is_empty() {
+        Command::new("bash")
+            .args([
+                "-c",
+                &format!(
+                    "source \"{}\" && {} {}",
+                    settings.env_script,
+                    check_binary,
+                    info.check_args.join(" ")
+                ),
+            ])
+            .output()
+    } else {
+        let parts: Vec<&str> = check_binary.split_whitespace().collect();
+        if parts.len() > 1 {
+            Command::new(parts[0])
+                .args(parts[1..].iter().chain(info.check_args.iter()))
+                .output()
+        } else {
+            Command::new(&check_binary).args(info.check_args).output()
+        }
+    };
+
+    match result {
         Ok(out) => out.status.success(),
         Err(_) => false,
     }
