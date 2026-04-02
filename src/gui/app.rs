@@ -767,63 +767,41 @@ impl eframe::App for App {
                 if self.server_controller.get_status() == crate::models::ServerStatus::Running
                     && self.frame_counter % 300 == 0
                 {
-                    let mut new_hf_model: Option<String> = None;
-                    if let Some(hf_id) = &self.started_hf_model {
-                        let hf_id_clone = hf_id.clone();
+                    if let Some(hf_id) = self.started_hf_model.clone() {
                         let provider = self.get_current_provider();
-                        for dir in &self.settings.scan_directories {
+                        let mut found_model = false;
+
+                        // Scan directories for downloaded model
+                        let all_dirs: Vec<String> = self
+                            .settings
+                            .scan_directories
+                            .clone()
+                            .into_iter()
+                            .chain(provider.default_model_directories())
+                            .collect();
+
+                        for dir in &all_dirs {
+                            if found_model {
+                                break;
+                            }
                             let found = provider.scan_models(dir);
                             for model in found {
-                                if model.path.contains(&hf_id_clone)
-                                    || model
-                                        .name
-                                        .contains(hf_id_clone.split('/').last().unwrap_or(""))
+                                if model.path.contains(&hf_id)
+                                    || model.name.contains(hf_id.split('/').last().unwrap_or(""))
                                 {
                                     if !self.models.iter().any(|m| m.path == model.path) {
                                         self.models.push(model.clone());
+                                        found_model = true;
                                     }
-                                    if self.server_config.huggingface_id == hf_id_clone {
-                                        self.server_config.model_path = self
-                                            .models
-                                            .iter()
-                                            .find(|m| m.path == model.path)
-                                            .map(|m| m.path.clone())
-                                            .unwrap_or_default();
+                                    if self.server_config.huggingface_id == hf_id {
+                                        self.server_config.model_path = model.path.clone();
                                         self.server_config.huggingface_id = String::new();
-                                        new_hf_model = Some(hf_id_clone.clone());
+                                        self.started_hf_model = None;
+                                        self.selected_model =
+                                            self.models.iter().position(|m| m.path == model.path);
                                     }
                                 }
                             }
-                        }
-                        let provider_dirs = provider.default_model_directories();
-                        for dir in &provider_dirs {
-                            let found = provider.scan_models(dir);
-                            for model in found {
-                                if model.path.contains(&hf_id_clone)
-                                    || model
-                                        .name
-                                        .contains(hf_id_clone.split('/').last().unwrap_or(""))
-                                {
-                                    if !self.models.iter().any(|m| m.path == model.path) {
-                                        self.models.push(model.clone());
-                                    }
-                                    if self.server_config.huggingface_id == hf_id_clone {
-                                        self.server_config.model_path = self
-                                            .models
-                                            .iter()
-                                            .find(|m| m.path == model.path)
-                                            .map(|m| m.path.clone())
-                                            .unwrap_or_default();
-                                        self.server_config.huggingface_id = String::new();
-                                        new_hf_model = Some(hf_id_clone.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if let Some(cleared) = new_hf_model {
-                        if self.started_hf_model.as_ref() == Some(&cleared) {
-                            self.started_hf_model = None;
                         }
                     }
 

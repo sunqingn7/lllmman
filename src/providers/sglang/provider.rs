@@ -47,10 +47,17 @@ impl LlmProvider for SglangProvider {
     }
 
     fn validate_config(&self, config: &ProviderConfig) -> Result<()> {
-        if config.model_path.is_empty() && config.huggingface_id.is_empty() {
+        let hf_id_trimmed = config.huggingface_id.trim();
+        if config.model_path.is_empty() && hf_id_trimmed.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Model path or HuggingFace model ID is required".into(),
             ));
+        }
+        if !hf_id_trimmed.is_empty() && !hf_id_trimmed.contains('/') {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Invalid HuggingFace ID format (expected 'user/repo'): {}",
+                config.huggingface_id
+            )));
         }
 
         if !config.model_path.is_empty() && config.model_path.contains('/') {

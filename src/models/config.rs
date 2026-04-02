@@ -98,6 +98,7 @@ pub struct ModelConfigEntry {
     pub cache_type_v: String,
     pub num_prompt_tracking: u32,
     pub additional_args: String,
+    pub gpu_allocation: GpuAllocation,
 }
 
 impl Default for ModelConfigEntry {
@@ -114,6 +115,7 @@ impl Default for ModelConfigEntry {
             cache_type_v: "q4_0".to_string(),
             num_prompt_tracking: 1,
             additional_args: String::new(),
+            gpu_allocation: GpuAllocation::All,
         }
     }
 }

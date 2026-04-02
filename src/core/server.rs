@@ -159,6 +159,14 @@ impl ServerController {
 
         if let Some(mut child) = self.process.take() {
             let _ = child.kill();
+            // Wait for process to terminate with timeout (max 5 seconds)
+            let start = std::time::Instant::now();
+            while child.try_wait().map(|r| r.is_none()).unwrap_or(true) {
+                if start.elapsed().as_secs() > 5 {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
             let _ = child.wait();
             *self.status.lock().unwrap() = ServerStatus::Stopped;
             killed = true;
