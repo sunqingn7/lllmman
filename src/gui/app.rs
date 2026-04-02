@@ -7,7 +7,7 @@ use crate::core::{
     LlmProvider, LogBuffer, LogLevel, ModelInfo, ModelSource, ProviderConfig, ProviderRegistry,
     ProviderSettings, ServerController,
 };
-use crate::models::{AppSettings, GpuInfo};
+use crate::models::{AppSettings, GpuInfo, MonitorStats};
 use crate::services::{
     check_provider_installed, config_persistence, detect_running_servers, get_fallback_config,
     get_provider_install_info, get_system_info_summary, get_system_stats, gpu_detector,
@@ -53,6 +53,7 @@ pub struct App {
     show_cmdline_dialog: bool,
     cmdline_input: String,
     started_hf_model: Option<String>,
+    cached_stats: Option<(u32, MonitorStats)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,6 +127,7 @@ impl App {
             show_cmdline_dialog: false,
             cmdline_input: String::new(),
             started_hf_model: None,
+            cached_stats: None,
         }
     }
 
@@ -689,7 +691,10 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.server_controller.refresh_external_detection();
+        // Throttle expensive operations
+        if self.frame_counter % 60 == 0 {
+            self.server_controller.refresh_external_detection();
+        }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -701,7 +706,17 @@ impl eframe::App for App {
                     self.show_gpu_settings = true;
                 }
                 ui.separator();
-                let stats = get_system_stats();
+                // Cache system stats for 30 frames (~0.5s at 60fps)
+                let stats = match &self.cached_stats {
+                    Some((last_frame, cached)) if self.frame_counter - last_frame < 30 => {
+                        cached.clone()
+                    }
+                    _ => {
+                        let new_stats = get_system_stats();
+                        self.cached_stats = Some((self.frame_counter, new_stats.clone()));
+                        new_stats
+                    }
+                };
 
                 for gpu_info in &self.gpus {
                     let index = gpu_info.index as usize;
