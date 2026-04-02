@@ -39,25 +39,27 @@ impl LlmProvider for LlamaCppProvider {
     }
 
     fn validate_config(&self, config: &ProviderConfig) -> Result<()> {
-        if config.model_path.is_empty() {
+        if config.model_path.is_empty() && config.huggingface_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
-                "Model path is required".into(),
+                "Model path or HuggingFace ID is required".into(),
             ));
         }
 
-        let path = std::path::Path::new(&config.model_path);
-        if !path.exists() {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Model file not found: {}",
-                config.model_path
-            )));
-        }
+        if !config.model_path.is_empty() {
+            let path = std::path::Path::new(&config.model_path);
+            if !path.exists() {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "Model file not found: {}",
+                    config.model_path
+                )));
+            }
 
-        if !path.is_file() {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Model path is not a file: {}",
-                config.model_path
-            )));
+            if !path.is_file() {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "Model path is not a file: {}",
+                    config.model_path
+                )));
+            }
         }
 
         Ok(())

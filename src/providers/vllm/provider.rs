@@ -47,13 +47,13 @@ impl LlmProvider for VllmProvider {
     }
 
     fn validate_config(&self, config: &ProviderConfig) -> Result<()> {
-        if config.model_path.is_empty() {
+        if config.model_path.is_empty() && config.huggingface_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Model path or HuggingFace model ID is required".into(),
             ));
         }
 
-        if config.model_path.contains('/') {
+        if !config.model_path.is_empty() && config.model_path.contains('/') {
             let path = Path::new(&config.model_path);
             if path.exists() && !path.is_dir() {
                 return Err(ProviderError::InvalidConfig(
