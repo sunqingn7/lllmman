@@ -1,14 +1,35 @@
 use crate::models::{GpuTemperature, MonitorStats};
 use crate::providers::llama_cpp::read_gguf_n_layer;
 use crate::services::gpu_detector;
+use std::sync::{Arc, Mutex};
+
+fn get_sys() -> Arc<Mutex<sysinfo::System>> {
+    static SYS: std::sync::OnceLock<Arc<Mutex<sysinfo::System>>> = std::sync::OnceLock::new();
+    SYS.get_or_init(|| Arc::new(Mutex::new(sysinfo::System::new_all())))
+        .clone()
+}
 
 pub fn get_system_stats() -> MonitorStats {
-    let mut sys = sysinfo::System::new();
-    sys.refresh_all();
+    let sys = get_sys();
+    {
+        let mut sys_guard = sys.lock().unwrap();
+        sys_guard.refresh_all();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    {
+        let mut sys_guard = sys.lock().unwrap();
+        sys_guard.refresh_all();
+    }
 
-    let cpu = sys.cpus().first().map(|c| c.cpu_usage()).unwrap_or(0.0);
-    let total_ram = sys.total_memory() as u64;
-    let used_ram = sys.used_memory() as u64;
+    let sys_guard = sys.lock().unwrap();
+    let cpu = sys_guard
+        .cpus()
+        .first()
+        .map(|c| c.cpu_usage())
+        .unwrap_or(0.0);
+    let total_ram = sys_guard.total_memory() as u64;
+    let used_ram = sys_guard.used_memory() as u64;
+    drop(sys_guard);
 
     let gpus = gpu_detector::detect_gpus();
     let gpu_usage = gpu_detector::get_all_gpu_usage();
