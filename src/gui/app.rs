@@ -487,169 +487,144 @@ impl App {
 
             ui.separator();
 
-            // Use a fixed width for the input column (400px)
-            egui::Grid::new("config")
-                .num_columns(2)
-                .min_col_width(400.0)
-                .show(ui, |ui| {
-                    ui.label("Model:");
-                    ui.text_edit_singleline(&mut self.server_config.model_path);
-                    ui.end_row();
+            egui::Grid::new("config").num_columns(2).show(ui, |ui| {
+                ui.label("Model:");
+                ui.text_edit_singleline(&mut self.server_config.model_path);
+                ui.end_row();
 
-                    ui.label("HuggingFace ID:");
-                    ui.text_edit_singleline(&mut self.server_config.huggingface_id);
-                    ui.end_row();
+                ui.label("HuggingFace ID:");
+                ui.text_edit_singleline(&mut self.server_config.huggingface_id);
+                ui.end_row();
 
-                    ui.label("Context Size:");
-                    ui.add_sized(
-                        [200.0, 0.0],
-                        egui::DragValue::new(&mut self.server_config.context_size)
-                            .clamp_range(256..=2097152),
+                ui.label("Context Size:");
+                ui.add(
+                    egui::DragValue::new(&mut self.server_config.context_size)
+                        .clamp_range(256..=2097152),
+                );
+                ui.end_row();
+
+                ui.label("Batch Size:");
+                ui.add(
+                    egui::DragValue::new(&mut self.server_config.batch_size).clamp_range(1..=8192),
+                );
+                ui.end_row();
+
+                ui.label("GPU Layers:");
+                ui.horizontal(|ui| {
+                    let mut gpu_layers_val = if self.server_config.gpu_layers < 0 {
+                        -1
+                    } else {
+                        self.server_config.gpu_layers
+                    };
+                    let display_text = if gpu_layers_val < 0 {
+                        "All".to_string()
+                    } else {
+                        gpu_layers_val.to_string()
+                    };
+
+                    if ui.button("All").clicked() {
+                        gpu_layers_val = -1;
+                    }
+
+                    ui.add(
+                        egui::DragValue::new(&mut gpu_layers_val)
+                            .custom_formatter(|n, _| {
+                                let n = n as i32;
+                                if n < 0 {
+                                    "All".to_string()
+                                } else {
+                                    n.to_string()
+                                }
+                            })
+                            .custom_parser(|s: &str| {
+                                if s.eq_ignore_ascii_case("all") {
+                                    Some(-1.0)
+                                } else {
+                                    s.parse::<i32>().ok().map(|v| v as f64)
+                                }
+                            }),
                     );
-                    ui.end_row();
+                    self.server_config.gpu_layers = gpu_layers_val;
 
-                    ui.label("Batch Size:");
-                    ui.add_sized(
-                        [200.0, 0.0],
-                        egui::DragValue::new(&mut self.server_config.batch_size)
-                            .clamp_range(1..=8192),
-                    );
-                    ui.end_row();
-
-                    ui.label("GPU Layers:");
-                    ui.horizontal(|ui| {
-                        let mut gpu_layers_val = if self.server_config.gpu_layers < 0 {
-                            -1
-                        } else {
-                            self.server_config.gpu_layers
-                        };
-                        let display_text = if gpu_layers_val < 0 {
-                            "All".to_string()
-                        } else {
-                            gpu_layers_val.to_string()
-                        };
-
-                        if ui.button("All").clicked() {
-                            gpu_layers_val = -1;
-                        }
-
-                        ui.add_sized(
-                            [100.0, 0.0],
-                            egui::DragValue::new(&mut gpu_layers_val)
-                                .custom_formatter(|n, _| {
-                                    let n = n as i32;
-                                    if n < 0 {
-                                        "All".to_string()
-                                    } else {
-                                        n.to_string()
-                                    }
-                                })
-                                .custom_parser(|s: &str| {
-                                    if s.eq_ignore_ascii_case("all") {
-                                        Some(-1.0)
-                                    } else {
-                                        s.parse::<i32>().ok().map(|v| v as f64)
-                                    }
-                                }),
-                        );
-                        self.server_config.gpu_layers = gpu_layers_val;
-
-                        if ui.button("Auto").clicked() {
-                            let model_size_gb = if let Ok(meta) =
-                                std::fs::metadata(&self.server_config.model_path)
-                            {
+                    if ui.button("Auto").clicked() {
+                        let model_size_gb =
+                            if let Ok(meta) = std::fs::metadata(&self.server_config.model_path) {
                                 meta.len() as f32 / (1024.0 * 1024.0 * 1024.0)
                             } else {
                                 7.0
                             };
 
-                            let total_layers = if self.selected_provider == "llama.cpp" {
-                                crate::providers::llama_cpp::read_gguf_n_layer(
-                                    &self.server_config.model_path,
-                                )
-                                .map(|l| l as i32)
-                                .unwrap_or(-1)
-                            } else {
-                                -1
-                            };
+                        let total_layers = if self.selected_provider == "llama.cpp" {
+                            crate::providers::llama_cpp::read_gguf_n_layer(
+                                &self.server_config.model_path,
+                            )
+                            .map(|l| l as i32)
+                            .unwrap_or(-1)
+                        } else {
+                            -1
+                        };
 
-                            let recommended = recommend_gpu_layers(model_size_gb, total_layers);
-                            self.server_config.gpu_layers = recommended;
-                        }
+                        let recommended = recommend_gpu_layers(model_size_gb, total_layers);
+                        self.server_config.gpu_layers = recommended;
+                    }
 
-                        // Fill remaining space with spacer to align with other rows
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(format!("({})", display_text));
-                        });
-                    });
-                    ui.end_row();
-
-                    ui.label("Threads:");
-                    ui.add_sized(
-                        [200.0, 0.0],
-                        egui::DragValue::new(&mut self.server_config.threads).clamp_range(1..=64),
-                    );
-                    ui.end_row();
-
-                    ui.label("K Cache Type:");
-                    ui.horizontal(|ui| {
-                        ui.set_min_width(200.0);
-                        egui::ComboBox::from_id_source("cache_k")
-                            .selected_text(&self.server_config.cache_type_k)
-                            .show_ui(ui, |ui| {
-                                let provider = self.get_current_provider();
-                                for q in provider.supported_quantizations() {
-                                    ui.selectable_value(
-                                        &mut self.server_config.cache_type_k,
-                                        q.to_string(),
-                                        q,
-                                    );
-                                }
-                            });
-                    });
-                    ui.end_row();
-
-                    ui.label("V Cache Type:");
-                    ui.horizontal(|ui| {
-                        ui.set_min_width(200.0);
-                        egui::ComboBox::from_id_source("cache_v")
-                            .selected_text(&self.server_config.cache_type_v)
-                            .show_ui(ui, |ui| {
-                                let provider = self.get_current_provider();
-                                for q in provider.supported_quantizations() {
-                                    ui.selectable_value(
-                                        &mut self.server_config.cache_type_v,
-                                        q.to_string(),
-                                        q,
-                                    );
-                                }
-                            });
-                    });
-                    ui.end_row();
-
-                    ui.label("Parallel:");
-                    ui.add_sized(
-                        [200.0, 0.0],
-                        egui::DragValue::new(&mut self.server_config.num_prompt_tracking)
-                            .clamp_range(1..=64),
-                    );
-                    ui.end_row();
-
-                    ui.label("Host:");
-                    ui.text_edit_singleline(&mut self.server_config.host);
-                    ui.end_row();
-
-                    ui.label("Port:");
-                    ui.add_sized(
-                        [200.0, 0.0],
-                        egui::DragValue::new(&mut self.server_config.port).clamp_range(1..=65535),
-                    );
-                    ui.end_row();
-
-                    ui.label("Additional Args:");
-                    ui.text_edit_singleline(&mut self.server_config.additional_args);
-                    ui.end_row();
+                    ui.label(format!("({})", display_text));
                 });
+                ui.end_row();
+
+                ui.label("Threads:");
+                ui.add(egui::DragValue::new(&mut self.server_config.threads).clamp_range(1..=64));
+                ui.end_row();
+
+                ui.label("K Cache Type:");
+                egui::ComboBox::from_id_source("cache_k")
+                    .selected_text(&self.server_config.cache_type_k)
+                    .show_ui(ui, |ui| {
+                        let provider = self.get_current_provider();
+                        for q in provider.supported_quantizations() {
+                            ui.selectable_value(
+                                &mut self.server_config.cache_type_k,
+                                q.to_string(),
+                                q,
+                            );
+                        }
+                    });
+                ui.end_row();
+
+                ui.label("V Cache Type:");
+                egui::ComboBox::from_id_source("cache_v")
+                    .selected_text(&self.server_config.cache_type_v)
+                    .show_ui(ui, |ui| {
+                        let provider = self.get_current_provider();
+                        for q in provider.supported_quantizations() {
+                            ui.selectable_value(
+                                &mut self.server_config.cache_type_v,
+                                q.to_string(),
+                                q,
+                            );
+                        }
+                    });
+                ui.end_row();
+
+                ui.label("Parallel:");
+                ui.add(
+                    egui::DragValue::new(&mut self.server_config.num_prompt_tracking)
+                        .clamp_range(1..=64),
+                );
+                ui.end_row();
+
+                ui.label("Host:");
+                ui.text_edit_singleline(&mut self.server_config.host);
+                ui.end_row();
+
+                ui.label("Port:");
+                ui.add(egui::DragValue::new(&mut self.server_config.port).clamp_range(1..=65535));
+                ui.end_row();
+
+                ui.label("Additional Args:");
+                ui.text_edit_singleline(&mut self.server_config.additional_args);
+                ui.end_row();
+            });
 
             ui.separator();
 
