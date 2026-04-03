@@ -268,41 +268,53 @@ fn read_sysfs_gpu_temp(index: u32) -> Option<u32> {
 }
 
 pub fn get_cpu_temperature() -> Option<f32> {
-    let mut temps: Vec<f32> = Vec::new();
-
+    // First, try to find CPU-specific thermal zone
     if let Ok(entries) = fs::read_dir("/sys/class/thermal") {
         for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with("thermal_zone") {
-                let temp_path = entry.path().join("temp");
-                if let Ok(content) = fs::read_to_string(temp_path) {
-                    if let Ok(millidegrees) = content.trim().parse::<f32>() {
-                        temps.push(millidegrees / 1000.0);
+            let type_path = entry.path().join("type");
+            let temp_path = entry.path().join("temp");
+
+            // Check if this is a CPU thermal zone
+            if let Ok(content) = fs::read_to_string(&type_path) {
+                let sensor_type = content.trim().to_lowercase();
+                if sensor_type.contains("cpu")
+                    || sensor_type.contains("pkg")
+                    || sensor_type.contains("core")
+                {
+                    if let Ok(temp_content) = fs::read_to_string(&temp_path) {
+                        if let Ok(millidegrees) = temp_content.trim().parse::<f32>() {
+                            return Some(millidegrees / 1000.0);
+                        }
                     }
                 }
             }
         }
     }
 
-    if temps.is_empty() {
-        if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
-            for entry in entries.flatten() {
-                let temp_path = entry.path().join("temp1_input");
-                if let Ok(content) = fs::read_to_string(temp_path) {
-                    if let Ok(millidegrees) = content.trim().parse::<f32>() {
-                        temps.push(millidegrees / 1000.0);
+    // Fallback: try hwmon
+    if let Ok(entries) = fs::read_dir("/sys/class/hwmon") {
+        for entry in entries.flatten() {
+            let name_path = entry.path().join("name");
+            if let Ok(name) = fs::read_to_string(&name_path) {
+                if name.trim().to_lowercase().contains("coretemp")
+                    || name.trim().to_lowercase().contains("k10temp")
+                    || name.trim().to_lowercase().contains("zenpower")
+                {
+                    // Try temp1_input, temp2_input, etc.
+                    for i in 1..=4 {
+                        let temp_path = entry.path().join(format!("temp{}_input", i));
+                        if let Ok(content) = fs::read_to_string(&temp_path) {
+                            if let Ok(millidegrees) = content.trim().parse::<f32>() {
+                                return Some(millidegrees / 1000.0);
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    if temps.is_empty() {
-        None
-    } else {
-        Some(temps.iter().sum::<f32>() / temps.len() as f32)
-    }
+    None
 }
 
 pub fn get_gpu_temperature(gpu: &GpuInfo) -> Option<u32> {
