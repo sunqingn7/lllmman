@@ -734,20 +734,47 @@ impl eframe::App for App {
                     };
 
                     ui.label(
-                        egui::RichText::new(format!("GPU{}", gpu_info.index))
+                        egui::RichText::new(format!(" GPU{}", gpu_info.index))
                             .color(egui::Color32::WHITE),
                     );
                     ui.label(
                         egui::RichText::new(format!(" ({})", gpu_info.name))
                             .color(egui::Color32::GRAY),
                     );
-                    ui.label(
-                        egui::RichText::new(format!(
-                            " {:.0}%( {}/{} MB)",
-                            vram_percent, used, total
-                        ))
-                        .color(usage_color(vram_percent)),
-                    );
+                    // VRAM Progress bar
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.0}%( {}/{} MB)",
+                                vram_percent, used, total
+                            ))
+                            .size(9.0)
+                            .color(usage_color(vram_percent)),
+                        );
+                        let rect = ui.available_rect_before_wrap();
+                        let bar_width = 100.0;
+                        let bar_height = 8.0;
+                        let bar_rect = egui::Rect::from_min_size(
+                            rect.min + egui::vec2(0.0, (rect.height() - bar_height) / 2.0),
+                            egui::vec2(bar_width, bar_height),
+                        );
+                        ui.painter().rect_filled(
+                            bar_rect.shrink(1.0),
+                            2.0,
+                            usage_color(vram_percent).linear_multiply(0.3),
+                        );
+                        let fill_width = (bar_width * (vram_percent / 100.0)).min(bar_width);
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(
+                                bar_rect.min,
+                                egui::vec2(fill_width, bar_height),
+                            )
+                            .shrink(1.0),
+                            2.0,
+                            usage_color(vram_percent),
+                        );
+                        ui.advance_cursor_after_rect(bar_rect);
+                    });
                     ui.label(
                         egui::RichText::new(format!(" {:.0}°C", temp)).color(temp_color(temp)),
                     );
@@ -760,13 +787,22 @@ impl eframe::App for App {
                     0.0
                 };
                 ui.label(egui::RichText::new("RAM: ").color(egui::Color32::WHITE));
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{:.0}%( {}/{} MB)",
-                        ram_percent, stats.ram_used_mb, stats.ram_total_mb
-                    ))
-                    .color(usage_color(ram_percent)),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{:.0}%( {}/{} MB)",
+                            ram_percent, stats.ram_used_mb, stats.ram_total_mb
+                        ))
+                        .size(9.0)
+                        .color(usage_color(ram_percent)),
+                    );
+                    ui.add(
+                        egui::ProgressBar::new(ram_percent / 100.0)
+                            .animate(true)
+                            .show_percentage()
+                            .desired_width(100.0),
+                    );
+                });
                 ui.separator();
 
                 ui.label(egui::RichText::new("CPU: ").color(egui::Color32::WHITE));
