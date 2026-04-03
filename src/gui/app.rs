@@ -742,8 +742,11 @@ impl eframe::App for App {
                             .color(egui::Color32::GRAY),
                     );
                     ui.label(
-                        egui::RichText::new(format!(" {}/{} MB", used, total))
-                            .color(usage_color(vram_percent)),
+                        egui::RichText::new(format!(
+                            " {:.0}%( {}/{} MB)",
+                            vram_percent, used, total
+                        ))
+                        .color(usage_color(vram_percent)),
                     );
                     ui.label(
                         egui::RichText::new(format!(" {:.0}°C", temp)).color(temp_color(temp)),
@@ -758,8 +761,11 @@ impl eframe::App for App {
                 };
                 ui.label(egui::RichText::new("RAM: ").color(egui::Color32::WHITE));
                 ui.label(
-                    egui::RichText::new(format!("{}/{} MB", stats.ram_used_mb, stats.ram_total_mb))
-                        .color(usage_color(ram_percent)),
+                    egui::RichText::new(format!(
+                        "{:.0}%( {}/{} MB)",
+                        ram_percent, stats.ram_used_mb, stats.ram_total_mb
+                    ))
+                    .color(usage_color(ram_percent)),
                 );
                 ui.separator();
 
