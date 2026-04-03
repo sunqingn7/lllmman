@@ -476,6 +476,7 @@ impl App {
                 }
 
                 if ui.button("⚙️ Provider Settings").clicked() {
+                    self.provider_settings = self.server_controller.get_provider_settings();
                     self.show_provider_settings = true;
                 }
 
@@ -743,26 +744,20 @@ impl eframe::App for App {
                     );
                     // VRAM Progress bar
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{:.0}%( {}/{} MB)",
-                                vram_percent, used, total
-                            ))
-                            .size(9.0)
-                            .color(usage_color(vram_percent)),
-                        );
                         let rect = ui.available_rect_before_wrap();
                         let bar_width = 100.0;
-                        let bar_height = 8.0;
+                        let bar_height = 16.0;
                         let bar_rect = egui::Rect::from_min_size(
                             rect.min + egui::vec2(0.0, (rect.height() - bar_height) / 2.0),
                             egui::vec2(bar_width, bar_height),
                         );
+                        // Background bar (very light)
                         ui.painter().rect_filled(
                             bar_rect.shrink(1.0),
                             2.0,
-                            usage_color(vram_percent).linear_multiply(0.3),
+                            usage_color(vram_percent).linear_multiply(0.15),
                         );
+                        // Fill bar
                         let fill_width = (bar_width * (vram_percent / 100.0)).min(bar_width);
                         ui.painter().rect_filled(
                             egui::Rect::from_min_size(
@@ -771,7 +766,20 @@ impl eframe::App for App {
                             )
                             .shrink(1.0),
                             2.0,
-                            usage_color(vram_percent),
+                            usage_color(vram_percent).linear_multiply(0.3),
+                        );
+                        // Text on top (centered)
+                        let text = format!(
+                            "{:.0}% {}/{}",
+                            vram_percent, stats.vram_used_mb, stats.vram_total_mb
+                        );
+                        let text_pos = bar_rect.center();
+                        ui.painter().text(
+                            text_pos,
+                            egui::Align2::CENTER_CENTER,
+                            text,
+                            egui::FontId::new(10.0, egui::FontFamily::Monospace),
+                            egui::Color32::WHITE,
                         );
                         ui.advance_cursor_after_rect(bar_rect);
                     });
@@ -788,20 +796,41 @@ impl eframe::App for App {
                 };
                 ui.label(egui::RichText::new("RAM: ").color(egui::Color32::WHITE));
                 ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{:.0}%( {}/{} MB)",
-                            ram_percent, stats.ram_used_mb, stats.ram_total_mb
-                        ))
-                        .size(9.0)
-                        .color(usage_color(ram_percent)),
+                    let rect = ui.available_rect_before_wrap();
+                    let bar_width = 100.0;
+                    let bar_height = 16.0;
+                    let bar_rect = egui::Rect::from_min_size(
+                        rect.min + egui::vec2(0.0, (rect.height() - bar_height) / 2.0),
+                        egui::vec2(bar_width, bar_height),
                     );
-                    ui.add(
-                        egui::ProgressBar::new(ram_percent / 100.0)
-                            .animate(true)
-                            .show_percentage()
-                            .desired_width(100.0),
+                    // Background bar (very light)
+                    ui.painter().rect_filled(
+                        bar_rect.shrink(1.0),
+                        2.0,
+                        usage_color(ram_percent).linear_multiply(0.15),
                     );
+                    // Fill bar
+                    let fill_width = (bar_width * (ram_percent / 100.0)).min(bar_width);
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_width, bar_height))
+                            .shrink(1.0),
+                        2.0,
+                        usage_color(ram_percent).linear_multiply(0.3),
+                    );
+                    // Text on top (centered)
+                    let text = format!(
+                        "{:.0}% {}/{}",
+                        ram_percent, stats.ram_used_mb, stats.ram_total_mb
+                    );
+                    let text_pos = bar_rect.center();
+                    ui.painter().text(
+                        text_pos,
+                        egui::Align2::CENTER_CENTER,
+                        text,
+                        egui::FontId::new(10.0, egui::FontFamily::Monospace),
+                        egui::Color32::WHITE,
+                    );
+                    ui.advance_cursor_after_rect(bar_rect);
                 });
                 ui.separator();
 
@@ -1263,10 +1292,6 @@ impl eframe::App for App {
                                 }
                             }
                             "GitHub Release" => {
-                                ui.horizontal(|ui| {
-                                    ui.label("Owner:");
-                                    ui.text_edit_singleline(&mut self.download_github_owner);
-                                });
                                 ui.horizontal(|ui| {
                                     ui.label("Repository:");
                                     ui.text_edit_singleline(&mut self.download_github_repo);
