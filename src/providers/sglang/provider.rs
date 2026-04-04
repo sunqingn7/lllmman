@@ -74,7 +74,7 @@ impl LlmProvider for SglangProvider {
 
     fn default_settings(&self) -> ProviderSettings {
         ProviderSettings {
-            binary_path: "python3 -m sglang.launch_server".to_string(),
+            binary_path: "sglang".to_string(),
             env_script: String::new(),
             additional_args: String::new(),
             health_endpoint: "/health".to_string(),
@@ -119,7 +119,7 @@ impl LlmProvider for SglangProvider {
         }
 
         let binary = if settings.binary_path.is_empty() {
-            "python3 -m sglang.launch_server"
+            "sglang"
         } else {
             &settings.binary_path
         };
@@ -129,15 +129,7 @@ impl LlmProvider for SglangProvider {
             cmd.push_str(&format!("source \"{}\" exec ", settings.env_script));
         }
 
-        let parts: Vec<&str> = binary.split_whitespace().collect();
-        if parts.len() > 1 {
-            cmd.push_str(&format!("{} ", parts[0]));
-            for part in &parts[1..] {
-                cmd.push_str(&format!("{} ", part));
-            }
-        } else {
-            cmd.push_str(&format!("\"{}\" ", binary));
-        }
+        cmd.push_str(&format!("{} serve ", binary));
 
         if !config.huggingface_id.is_empty() {
             cmd.push_str(&format!("--model-path \"{}\" ", config.huggingface_id));
@@ -266,7 +258,7 @@ impl LlmProvider for SglangProvider {
                     continue;
                 }
                 let lower = line.to_lowercase();
-                if !lower.contains("launch_server") {
+                if !lower.contains("serve") && !lower.contains("launch_server") {
                     continue;
                 }
                 if let Some(space_pos) = line.find(' ') {
