@@ -135,9 +135,14 @@ impl LlmProvider for SglangProvider {
         cmd.push_str(&format!("{} serve ", binary));
 
         if !config.huggingface_id.is_empty() {
-            cmd.push_str(&format!("--model-path \"{}\" ", config.huggingface_id));
+            cmd.push_str(&format!("--model \"{}\" ", config.huggingface_id));
         } else if config.model_path.contains('/') && Path::new(&config.model_path).exists() {
             cmd.push_str(&format!("--model-path \"{}\" ", config.model_path));
+        } else if config.model_path.contains('/')
+            && !config.model_path.starts_with('/')
+            && !config.model_path.starts_with('.')
+        {
+            cmd.push_str(&format!("--model \"{}\" ", config.model_path));
         } else {
             cmd.push_str(&format!("--model-path {} ", config.model_path));
         }
