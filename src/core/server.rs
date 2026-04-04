@@ -158,6 +158,15 @@ impl ServerController {
         let mut killed = false;
 
         if let Some(mut child) = self.process.take() {
+            // Kill the entire process group to ensure all child processes are terminated
+            // vLLM and other providers spawn worker processes that survive parent kill
+            let pid = child.id();
+            let _ = Command::new("pkill")
+                .args(["-P", &pid.to_string()])
+                .output();
+            let _ = Command::new("kill")
+                .args(["-9", &format!("-{}", pid)])
+                .output();
             let _ = child.kill();
             // Wait for process to terminate with timeout (max 5 seconds)
             let start = std::time::Instant::now();
@@ -173,6 +182,18 @@ impl ServerController {
         }
 
         if let Some(pid) = self.external_pid {
+            // Kill all child processes first, then the parent
+            // vLLM and other Python-based servers spawn worker processes that survive parent kill
+            let _ = Command::new("pkill")
+                .args(["-P", &pid.to_string()])
+                .output();
+
+            // Also try killing the process group (negative PID) as fallback
+            let _ = Command::new("kill")
+                .args(["-9", &format!("-{}", pid)])
+                .output();
+
+            // Finally kill the parent process
             if Command::new("kill")
                 .arg("-9")
                 .arg(pid.to_string())
