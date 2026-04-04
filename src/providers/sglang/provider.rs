@@ -77,6 +77,8 @@ impl LlmProvider for SglangProvider {
             binary_path: "python3 -m sglang.launch_server".to_string(),
             env_script: String::new(),
             additional_args: String::new(),
+            health_endpoint: "/health".to_string(),
+            heartbeat_interval_secs: 6,
         }
     }
 
@@ -111,6 +113,10 @@ impl LlmProvider for SglangProvider {
 
     fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
         let mut cmd = String::new();
+
+        if let Some(gpu) = config.selected_gpu {
+            cmd.push_str(&format!("CUDA_VISIBLE_DEVICES={} ", gpu));
+        }
 
         let binary = if settings.binary_path.is_empty() {
             "python3 -m sglang.launch_server"
@@ -226,6 +232,7 @@ impl LlmProvider for SglangProvider {
             size_gb,
             quantization: "unknown".to_string(),
             model_type: ModelType::TextOnly,
+            is_moe: false,
         })
     }
 
@@ -378,6 +385,7 @@ fn parse_hf_model_dir(path: &Path) -> Option<ModelInfo> {
         size_gb: (size_gb * 100.0).round() / 100.0,
         quantization,
         model_type: ModelType::TextOnly,
+        is_moe: false,
     })
 }
 
@@ -411,10 +419,11 @@ fn parse_gguf_file(path: &Path) -> Option<ModelInfo> {
 
     Some(ModelInfo {
         path: path.to_string_lossy().to_string(),
-        name: filename,
+        name: filename.clone(),
         size_gb: (size_gb * 100.0).round() / 100.0,
         quantization,
         model_type: ModelType::TextOnly,
+        is_moe: filename.to_lowercase().contains("moe"),
     })
 }
 

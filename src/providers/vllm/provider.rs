@@ -77,6 +77,8 @@ impl LlmProvider for VllmProvider {
             binary_path: "vllm".to_string(),
             env_script: String::new(),
             additional_args: String::new(),
+            health_endpoint: "/health".to_string(),
+            heartbeat_interval_secs: 6,
         }
     }
 
@@ -113,6 +115,10 @@ impl LlmProvider for VllmProvider {
 
     fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
         let mut cmd = String::new();
+
+        if let Some(gpu) = config.selected_gpu {
+            cmd.push_str(&format!("CUDA_VISIBLE_DEVICES={} ", gpu));
+        }
 
         let binary = if settings.binary_path.is_empty() {
             "vllm"
@@ -161,20 +167,18 @@ impl LlmProvider for VllmProvider {
             cmd.push_str(&format!("--max-num-batched-tokens {} ", config.batch_size));
         }
 
+        if !config.cache_type_k.is_empty() {
+            cmd.push_str(&format!("--kv-cache-dtype {} ", config.cache_type_k));
+        }
+
         if !config.additional_args.is_empty() {
-            for arg in config.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    cmd.push_str(&format!("{} ", arg));
-                }
-            }
+            cmd.push_str(&config.additional_args);
+            cmd.push(' ');
         }
 
         if !settings.additional_args.is_empty() {
-            for arg in settings.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    cmd.push_str(&format!("{} ", arg));
-                }
-            }
+            cmd.push_str(&settings.additional_args);
+            cmd.push(' ');
         }
 
         cmd
@@ -220,6 +224,7 @@ impl LlmProvider for VllmProvider {
             size_gb,
             quantization: "unknown".to_string(),
             model_type: ModelType::TextOnly,
+            is_moe: false,
         })
     }
 
@@ -342,6 +347,13 @@ impl LlmProvider for VllmProvider {
                         i += 1;
                     }
                 }
+                "--kv-cache-dtype" => {
+                    if i + 1 < args.len() {
+                        config.cache_type_k = args[i + 1].to_string();
+                        config.cache_type_v = args[i + 1].to_string();
+                        i += 1;
+                    }
+                }
                 _ => {
                     // Collect unknown arguments (skip 'serve' command)
                     if arg.starts_with('-') {
@@ -378,7 +390,7 @@ fn parse_hf_model_dir(path: &Path) -> Option<ModelInfo> {
 
     let size_gb = calculate_dir_size(&path.to_string_lossy());
 
-    let quantization = detect_quantization(path);
+    let (quantization, is_moe) = detect_quantization_and_moe(path);
 
     Some(ModelInfo {
         path: name.clone(),
@@ -386,6 +398,7 @@ fn parse_hf_model_dir(path: &Path) -> Option<ModelInfo> {
         size_gb: (size_gb * 100.0).round() / 100.0,
         quantization,
         model_type: ModelType::TextOnly,
+        is_moe,
     })
 }
 
@@ -409,7 +422,7 @@ fn calculate_dir_size(path: &str) -> f32 {
     total_size as f32 / (1024.0 * 1024.0 * 1024.0)
 }
 
-fn detect_quantization(model_dir: &Path) -> String {
+fn detect_quantization_and_moe(model_dir: &Path) -> (String, bool) {
     if let Ok(entries) = std::fs::read_dir(model_dir) {
         for entry in entries.flatten() {
             let entry_path = entry.path();
@@ -425,24 +438,48 @@ fn detect_quantization(model_dir: &Path) -> String {
                                 if let Ok(json) =
                                     serde_json::from_str::<serde_json::Value>(&content)
                                 {
-                                    if let Some(quant) = json.get("quantization_config") {
+                                    let quantization = if let Some(quant) =
+                                        json.get("quantization_config")
+                                    {
                                         if let Some(method) = quant.get("quant_method") {
                                             if let Some(method_str) = method.as_str() {
-                                                return method_str.to_lowercase();
+                                                method_str.to_lowercase()
+                                            } else {
+                                                "unknown".to_string()
                                             }
+                                        } else {
+                                            "unknown".to_string()
                                         }
-                                    }
-
-                                    if let Some(torch_dtype) = json.get("torch_dtype") {
+                                    } else if let Some(torch_dtype) = json.get("torch_dtype") {
                                         if let Some(dtype_str) = torch_dtype.as_str() {
-                                            return match dtype_str {
+                                            match dtype_str {
                                                 "float16" | "torch.float16" => "fp16".to_string(),
                                                 "float32" | "torch.float32" => "fp32".to_string(),
                                                 "bfloat16" | "torch.bfloat16" => "bf16".to_string(),
                                                 _ => dtype_str.to_lowercase(),
-                                            };
+                                            }
+                                        } else {
+                                            "unknown".to_string()
                                         }
-                                    }
+                                    } else {
+                                        "unknown".to_string()
+                                    };
+
+                                    let is_moe = json.get("num_local_experts").is_some()
+                                        || json.get("num_experts").is_some()
+                                        || json
+                                            .get("architectures")
+                                            .and_then(|a| a.as_array())
+                                            .map(|archs| {
+                                                archs.iter().any(|a| {
+                                                    a.as_str()
+                                                        .map(|s| s.contains("MoE"))
+                                                        .unwrap_or(false)
+                                                })
+                                            })
+                                            .unwrap_or(false);
+
+                                    return (quantization, is_moe);
                                 }
                             }
                         }
@@ -452,5 +489,10 @@ fn detect_quantization(model_dir: &Path) -> String {
         }
     }
 
-    "unknown".to_string()
+    ("unknown".to_string(), false)
+}
+
+#[allow(dead_code)]
+fn detect_quantization(model_dir: &Path) -> String {
+    detect_quantization_and_moe(model_dir).0
 }

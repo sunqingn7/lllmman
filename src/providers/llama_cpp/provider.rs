@@ -1,7 +1,8 @@
 use std::process::{Command, Stdio};
 
 use crate::core::{
-    DetectedServer, LlmProvider, ModelInfo, ProviderConfig, ProviderError, ProviderSettings, Result,
+    CpuOffloadMode, DetectedServer, LlmProvider, ModelInfo, ProviderConfig, ProviderError,
+    ProviderSettings, Result,
 };
 use crate::models::ModelType;
 
@@ -77,6 +78,8 @@ impl LlmProvider for LlamaCppProvider {
             binary_path: "llama-server".to_string(),
             env_script: String::new(),
             additional_args: String::new(),
+            health_endpoint: "/health".to_string(),
+            heartbeat_interval_secs: 6,
         }
     }
 
@@ -105,6 +108,33 @@ impl LlmProvider for LlamaCppProvider {
     fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
         let mut cmd = String::new();
 
+        if let Some(gpu) = config.selected_gpu {
+            cmd.push_str(&format!("CUDA_VISIBLE_DEVICES={} ", gpu));
+        }
+
+        let effective_gpu_layers = match config.cpu_offload {
+            CpuOffloadMode::FullOffload => 0,
+            CpuOffloadMode::Disabled => -1,
+            CpuOffloadMode::Offload => {
+                if config.gpu_layers < 0 {
+                    let model_size_gb = if !config.model_path.is_empty() {
+                        std::fs::metadata(&config.model_path)
+                            .map(|m| m.len() as f32 / (1024.0 * 1024.0 * 1024.0))
+                            .unwrap_or(7.0)
+                    } else {
+                        7.0
+                    };
+                    let total_layers = read_gguf_n_layer(&config.model_path).unwrap_or(0) as i32;
+                    let recommended =
+                        crate::services::recommend_gpu_layers(model_size_gb, total_layers);
+                    recommended.max(0)
+                } else {
+                    config.gpu_layers
+                }
+            }
+            CpuOffloadMode::Auto => config.gpu_layers,
+        };
+
         let binary = if settings.binary_path.is_empty() {
             "llama-server"
         } else {
@@ -124,7 +154,7 @@ impl LlmProvider for LlamaCppProvider {
             if config.batch_size > 0 {
                 cmd.push_str(&format!(" -b {}", config.batch_size));
             }
-            cmd.push_str(&format!(" -ngl {}", config.gpu_layers));
+            cmd.push_str(&format!(" -ngl {}", effective_gpu_layers));
             if config.threads > 0 {
                 cmd.push_str(&format!(" -t {}", config.threads));
             }
@@ -167,7 +197,7 @@ impl LlmProvider for LlamaCppProvider {
             if config.batch_size > 0 {
                 cmd.push_str(&format!("-b {} ", config.batch_size));
             }
-            cmd.push_str(&format!("-ngl {} ", config.gpu_layers));
+            cmd.push_str(&format!("-ngl {} ", effective_gpu_layers));
             if config.threads > 0 {
                 cmd.push_str(&format!("-t {} ", config.threads));
             }
@@ -415,10 +445,11 @@ fn parse_gguf_file(path: &std::path::Path) -> Option<ModelInfo> {
 
     Some(ModelInfo {
         path: path.to_string_lossy().to_string(),
-        name: filename,
+        name: filename.clone(),
         size_gb: (size_gb * 100.0).round() / 100.0,
         quantization,
         model_type: ModelType::TextOnly,
+        is_moe: filename.to_lowercase().contains("moe"),
     })
 }
 
@@ -437,175 +468,10 @@ fn extract_quantization(filename: &str) -> String {
     "unknown".to_string()
 }
 
-/// Read n_layer from GGUF file header
+/// Read n_layer from GGUF file header (uses cached metadata)
 pub fn read_gguf_n_layer(path: &str) -> Option<u32> {
-    let data = match std::fs::read(path) {
-        Ok(d) => d,
-        Err(_) => return None,
-    };
-
-    if data.len() < 24 {
-        return None;
+    if let Some(meta) = crate::services::get_model_metadata(path) {
+        return meta.n_layer;
     }
-
-    if &data[0..4] != b"GGUF" {
-        return None;
-    }
-
-    let metadata_count = u64::from_le_bytes([
-        data[16], data[17], data[18], data[19], data[20], data[21], data[22], data[23],
-    ]) as usize;
-
-    if metadata_count > 10000 {
-        return None;
-    }
-
-    let mut offset = 24usize;
-
-    for _ in 0..metadata_count {
-        if offset + 12 > data.len() {
-            break;
-        }
-
-        let key_len = u64::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-            data[offset + 4],
-            data[offset + 5],
-            data[offset + 6],
-            data[offset + 7],
-        ]) as usize;
-
-        if key_len > 200 || offset + 12 + key_len > data.len() {
-            break;
-        }
-
-        let key = match String::from_utf8(data[offset + 8..offset + 8 + key_len].to_vec()) {
-            Ok(k) => k,
-            Err(_) => {
-                offset += 8 + key_len + 4;
-                continue;
-            }
-        };
-        offset += 8 + key_len;
-
-        if offset + 4 > data.len() {
-            break;
-        }
-        let val_type = u32::from_le_bytes([
-            data[offset],
-            data[offset + 1],
-            data[offset + 2],
-            data[offset + 3],
-        ]);
-        offset += 4;
-
-        if key.ends_with(".block_count") {
-            if val_type == 4 {
-                if offset + 4 <= data.len() {
-                    let block_count = u32::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                    ]);
-                    return Some(block_count);
-                }
-            }
-        }
-
-        match val_type {
-            0 | 1 => {
-                offset += 1;
-            }
-            2 | 3 => {
-                offset += 2;
-            }
-            4 | 5 | 6 => {
-                offset += 4;
-            }
-            7 => {
-                offset += 8;
-            }
-            8 => {
-                if offset + 8 <= data.len() {
-                    let str_len = u64::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                        data[offset + 4],
-                        data[offset + 5],
-                        data[offset + 6],
-                        data[offset + 7],
-                    ]) as usize;
-                    offset += 8 + str_len.min(10000);
-                }
-            }
-            9 => {
-                if offset + 12 <= data.len() {
-                    let arr_type = u32::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                    ]);
-                    offset += 4;
-                    let arr_count = u64::from_le_bytes([
-                        data[offset],
-                        data[offset + 1],
-                        data[offset + 2],
-                        data[offset + 3],
-                        data[offset + 4],
-                        data[offset + 5],
-                        data[offset + 6],
-                        data[offset + 7],
-                    ]) as usize;
-                    offset += 8;
-
-                    match arr_type {
-                        0 | 1 => {
-                            offset += arr_count;
-                        }
-                        2 | 3 => {
-                            offset += arr_count * 2;
-                        }
-                        4 | 5 | 6 => {
-                            offset += arr_count * 4;
-                        }
-                        7 => {
-                            offset += arr_count * 8;
-                        }
-                        8 => {
-                            for _ in 0..arr_count.min(1000) {
-                                if offset + 8 > data.len() {
-                                    break;
-                                }
-                                let el_len = u64::from_le_bytes([
-                                    data[offset],
-                                    data[offset + 1],
-                                    data[offset + 2],
-                                    data[offset + 3],
-                                    data[offset + 4],
-                                    data[offset + 5],
-                                    data[offset + 6],
-                                    data[offset + 7],
-                                ]) as usize;
-                                offset += 8 + el_len.min(10000);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            10 | 11 | 12 => {
-                offset += 8;
-            }
-            _ => {}
-        }
-    }
-
     None
 }

@@ -29,4 +29,5 @@ pub struct Model {
     pub quantization: String,
     pub source: ModelSource,
     pub model_type: ModelType,
+    pub is_moe: bool,
 }

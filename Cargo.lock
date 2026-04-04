@@ -2234,6 +2234,7 @@ dependencies = [
  "env_logger",
  "futures",
  "log",
+ "memmap2",
  "once_cell",
  "ratatui",
  "reqwest",

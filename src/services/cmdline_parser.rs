@@ -116,6 +116,22 @@ pub fn parse_command_line(cmd_line: &str) -> ProviderConfig {
                     i += 1;
                 }
             }
+            "--max-num-seqs" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse() {
+                        config.threads = val;
+                    }
+                    i += 1;
+                }
+            }
+            "--max-num-batched-tokens" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse() {
+                        config.batch_size = val;
+                    }
+                    i += 1;
+                }
+            }
             // Collect unrecognized args as additional_args
             _ => {
                 // If it looks like a path and no model_path set yet, treat as model path

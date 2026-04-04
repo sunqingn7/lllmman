@@ -54,6 +54,7 @@ pub struct App {
     cmdline_input: String,
     started_hf_model: Option<String>,
     cached_stats: Option<(u32, MonitorStats)>,
+    previous_server_status: crate::models::ServerStatus,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -128,6 +129,7 @@ impl App {
             cmdline_input: String::new(),
             started_hf_model: None,
             cached_stats: None,
+            previous_server_status: crate::models::ServerStatus::Stopped,
         }
     }
 
@@ -202,6 +204,14 @@ impl App {
 
     fn get_current_provider(&self) -> Arc<dyn LlmProvider> {
         Self::get_provider_static(&self.selected_provider)
+    }
+
+    fn build_gpu_selection_options(&self) -> Vec<(String, Option<u32>)> {
+        let mut options = vec![("Auto".to_string(), None)];
+        for gpu in &self.gpus {
+            options.push((format!("GPU {}", gpu.index), Some(gpu.index)));
+        }
+        options
     }
 
     fn switch_provider(&mut self, new_provider_id: &str) {
@@ -318,9 +328,26 @@ impl App {
 
                 ui.separator();
 
-                if ui.button("Download").clicked() {
-                    self.show_download = true;
-                }
+                ui.horizontal(|ui| {
+                    if ui.button("Download").clicked() {
+                        self.show_download = true;
+                    }
+
+                    if ui.button("Refresh").clicked() {
+                        let provider = self.get_current_provider();
+                        let mut new_models = Vec::new();
+                        for dir in &self.settings.scan_directories {
+                            let found = provider.scan_models(dir);
+                            new_models.extend(found);
+                        }
+                        let provider_dirs = provider.default_model_directories();
+                        for dir in &provider_dirs {
+                            let found = provider.scan_models(dir);
+                            new_models.extend(found);
+                        }
+                        self.models = new_models;
+                    }
+                });
 
                 ui.separator();
 
@@ -442,6 +469,46 @@ impl App {
                                     self.server_config.num_prompt_tracking =
                                         fallback.num_prompt_tracking;
                                     self.server_config.additional_args = fallback.additional_args;
+                                }
+
+                                if self.selected_provider == "llama.cpp" {
+                                    let model_size_gb = model.size_gb;
+                                    let available_vram: u32 =
+                                        self.gpus.iter().map(|g| g.total_vram_mb).sum();
+                                    let total_layers =
+                                        crate::providers::llama_cpp::read_gguf_n_layer(&model.path)
+                                            .map(|l| l as i32)
+                                            .unwrap_or(-1);
+
+                                    if available_vram > 0 && model_size_gb > 0.0 {
+                                        let (suggested_mode, suggested_layers) =
+                                            crate::services::calculate_cpu_offload_mode(
+                                                model_size_gb,
+                                                available_vram,
+                                                total_layers,
+                                                self.server_config.context_size,
+                                            );
+
+                                        if !matches!(
+                                            suggested_mode,
+                                            crate::core::CpuOffloadMode::Auto
+                                        ) {
+                                            self.server_config.cpu_offload = suggested_mode;
+                                            if suggested_layers >= 0 {
+                                                self.server_config.gpu_layers = suggested_layers;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if self.selected_provider == "vllm" {
+                                    crate::services::apply_vllm_smart_config(
+                                        model.size_gb,
+                                        self.server_config.context_size,
+                                        model.is_moe,
+                                        Some(&self.gpus),
+                                        &mut self.server_config,
+                                    );
                                 }
                             }
 
@@ -573,6 +640,27 @@ impl App {
                 });
                 ui.end_row();
 
+                ui.label("GPU:");
+                ui.horizontal(|ui| {
+                    let gpu_options = self.build_gpu_selection_options();
+                    let current_label = match self.server_config.selected_gpu {
+                        None => "Auto".to_string(),
+                        Some(idx) => format!("GPU {}", idx),
+                    };
+                    egui::ComboBox::from_id_source("gpu_selection")
+                        .selected_text(&current_label)
+                        .show_ui(ui, |ui| {
+                            for (label, value) in &gpu_options {
+                                ui.selectable_value(
+                                    &mut self.server_config.selected_gpu,
+                                    *value,
+                                    label,
+                                );
+                            }
+                        });
+                });
+                ui.end_row();
+
                 ui.label("Threads:");
                 ui.add(egui::DragValue::new(&mut self.server_config.threads).clamp_range(1..=64));
                 ui.end_row();
@@ -612,6 +700,67 @@ impl App {
                     egui::DragValue::new(&mut self.server_config.num_prompt_tracking)
                         .clamp_range(1..=64),
                 );
+                ui.end_row();
+
+                ui.label("CPU Offload:");
+                ui.horizontal(|ui| {
+                    let offload_options = vec![
+                        ("Auto", crate::core::CpuOffloadMode::Auto),
+                        ("Offload", crate::core::CpuOffloadMode::Offload),
+                        ("Full GPU", crate::core::CpuOffloadMode::Disabled),
+                        ("CPU Only", crate::core::CpuOffloadMode::FullOffload),
+                    ];
+                    let current_label = match self.server_config.cpu_offload {
+                        crate::core::CpuOffloadMode::Auto => "Auto",
+                        crate::core::CpuOffloadMode::Offload => "Offload",
+                        crate::core::CpuOffloadMode::Disabled => "Full GPU",
+                        crate::core::CpuOffloadMode::FullOffload => "CPU Only",
+                    };
+                    egui::ComboBox::from_id_source("cpu_offload")
+                        .selected_text(current_label)
+                        .show_ui(ui, |ui| {
+                            for (label, value) in &offload_options {
+                                ui.selectable_value(
+                                    &mut self.server_config.cpu_offload,
+                                    value.clone(),
+                                    *label,
+                                );
+                            }
+                        });
+                    if self.selected_provider == "llama.cpp" {
+                        let model_size_gb = if !self.server_config.model_path.is_empty() {
+                            std::fs::metadata(&self.server_config.model_path)
+                                .map(|m| m.len() as f32 / (1024.0 * 1024.0 * 1024.0))
+                                .unwrap_or(0.0)
+                        } else {
+                            0.0
+                        };
+                        let available_vram: u32 = self.gpus.iter().map(|g| g.total_vram_mb).sum();
+                        if model_size_gb > 0.0 && available_vram > 0 {
+                            let vram_needed = (model_size_gb * 1024.0 * 1.2) as u32;
+                            if available_vram < vram_needed {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "(VRAM needed: {}MB, available: {}MB)",
+                                        vram_needed, available_vram
+                                    ))
+                                    .color(egui::Color32::YELLOW),
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("(VRAM sufficient)")
+                                        .color(egui::Color32::GREEN),
+                                );
+                            }
+                        }
+                    } else {
+                        ui.label(
+                            egui::RichText::new("(Not supported by this provider)")
+                                .color(egui::Color32::GRAY)
+                                .italics(),
+                        );
+                    }
+                });
                 ui.end_row();
 
                 ui.label("Host:");
@@ -769,10 +918,7 @@ impl eframe::App for App {
                             usage_color(vram_percent).linear_multiply(0.3),
                         );
                         // Text on top (centered)
-                        let text = format!(
-                            "{:.0}% {}/{}",
-                            vram_percent, stats.vram_used_mb, stats.vram_total_mb
-                        );
+                        let text = format!("{:.0}% {}/{}", vram_percent, used, total);
                         let text_pos = bar_rect.center();
                         ui.painter().text(
                             text_pos,
@@ -845,12 +991,17 @@ impl eframe::App for App {
                             .color(temp_color(cpu_temp)),
                     );
                 }
-                if self.server_controller.get_status() == crate::models::ServerStatus::Running
-                    && self.frame_counter % 300 == 0
-                {
+                let current_status = self.server_controller.get_status();
+                let status_just_became_running =
+                    matches!(current_status, crate::models::ServerStatus::Running)
+                        && !matches!(
+                            self.previous_server_status,
+                            crate::models::ServerStatus::Running
+                        );
+
+                if status_just_became_running {
                     if let Some(hf_id) = self.started_hf_model.clone() {
                         let provider = self.get_current_provider();
-                        let mut found_model = false;
 
                         // Scan directories for downloaded model
                         let all_dirs: Vec<String> = self
@@ -862,9 +1013,6 @@ impl eframe::App for App {
                             .collect();
 
                         for dir in &all_dirs {
-                            if found_model {
-                                break;
-                            }
                             let found = provider.scan_models(dir);
                             for model in found {
                                 if model.path.contains(&hf_id)
@@ -872,7 +1020,6 @@ impl eframe::App for App {
                                 {
                                     if !self.models.iter().any(|m| m.path == model.path) {
                                         self.models.push(model.clone());
-                                        found_model = true;
                                     }
                                     if self.server_config.huggingface_id == hf_id {
                                         self.server_config.model_path = model.path.clone();
@@ -885,10 +1032,17 @@ impl eframe::App for App {
                             }
                         }
                     }
+                }
 
+                if matches!(current_status, crate::models::ServerStatus::Running)
+                    && self.frame_counter
+                        % (self.provider_settings.heartbeat_interval_secs as u32 * 50)
+                        == 0
+                {
                     if let Some(server_stats) = crate::services::fetch_server_stats(
                         &self.server_config.host,
                         self.server_config.port,
+                        &self.provider_settings.health_endpoint,
                     ) {
                         let tps = server_stats
                             .time_per_token
@@ -902,6 +1056,8 @@ impl eframe::App for App {
                         ));
                     }
                 }
+
+                self.previous_server_status = current_status;
             });
         });
 
@@ -941,6 +1097,21 @@ impl eframe::App for App {
                     ui.label("Additional Arguments:");
                     ui.text_edit_singleline(&mut self.provider_settings.additional_args);
                     ui.small("Extra CLI args passed to the server (space-separated, e.g., --flash-attention --no-mmap)");
+
+                    ui.add_space(8.0);
+
+                    ui.label("Health Endpoint:");
+                    ui.text_edit_singleline(&mut self.provider_settings.health_endpoint);
+                    ui.small("HTTP endpoint used to check if server is alive (e.g., /health, /v1/models)");
+
+                    ui.add_space(8.0);
+
+                    ui.label("Heartbeat Interval (seconds):");
+                    ui.add(
+                        egui::DragValue::new(&mut self.provider_settings.heartbeat_interval_secs)
+                            .clamp_range(1..=60),
+                    );
+                    ui.small("How often to ping the server for status (1-60 seconds)");
 
                     ui.add_space(12.0);
 

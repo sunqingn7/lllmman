@@ -87,21 +87,18 @@ pub struct ServerStats {
     pub tokens_generated: Option<u64>,
 }
 
-pub fn fetch_server_stats(host: &str, port: u16) -> Option<ServerStats> {
+pub fn fetch_server_stats(host: &str, port: u16, health_endpoint: &str) -> Option<ServerStats> {
     let url = format!("http://{}:{}/stats", host, port);
 
-    // First check if server is ready with a simple GET
-    let check_url = format!("http://{}:{}/", host, port);
+    let check_url = format!("http://{}:{}{}", host, port, health_endpoint);
     if let Ok(response) = reqwest::blocking::get(&check_url) {
         if !response.status().is_success() {
             return None;
         }
     } else {
-        // Server not responding
         return None;
     }
 
-    // Now fetch stats
     let response = reqwest::blocking::get(&url).ok()?;
     if !response.status().is_success() {
         return None;

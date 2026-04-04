@@ -35,6 +35,7 @@ pub struct ModelInfo {
     pub size_gb: f32,
     pub quantization: String,
     pub model_type: ModelType,
+    pub is_moe: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,6 +88,18 @@ pub struct ProviderSettings {
     pub binary_path: String,
     pub env_script: String,
     pub additional_args: String,
+    #[serde(default = "default_health_endpoint")]
+    pub health_endpoint: String,
+    #[serde(default = "default_heartbeat_interval")]
+    pub heartbeat_interval_secs: u64,
+}
+
+fn default_health_endpoint() -> String {
+    "/health".to_string()
+}
+
+fn default_heartbeat_interval() -> u64 {
+    6
 }
 
 impl Default for ProviderSettings {
@@ -95,7 +108,23 @@ impl Default for ProviderSettings {
             binary_path: String::new(),
             env_script: String::new(),
             additional_args: String::new(),
+            health_endpoint: default_health_endpoint(),
+            heartbeat_interval_secs: default_heartbeat_interval(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub enum CpuOffloadMode {
+    Auto,
+    Offload,
+    FullOffload,
+    Disabled,
+}
+
+impl Default for CpuOffloadMode {
+    fn default() -> Self {
+        CpuOffloadMode::Auto
     }
 }
 
@@ -115,6 +144,10 @@ pub struct ProviderConfig {
     pub cache_type_v: String,
     pub num_prompt_tracking: u32,
     pub gpu_allocation: crate::models::GpuAllocation,
+    #[serde(default)]
+    pub selected_gpu: Option<u32>,
+    #[serde(default)]
+    pub cpu_offload: CpuOffloadMode,
 }
 
 impl Default for ProviderConfig {
@@ -134,6 +167,8 @@ impl Default for ProviderConfig {
             cache_type_v: "q4_0".to_string(),
             num_prompt_tracking: 1,
             gpu_allocation: crate::models::GpuAllocation::All,
+            selected_gpu: None,
+            cpu_offload: CpuOffloadMode::Auto,
         }
     }
 }
