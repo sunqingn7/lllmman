@@ -1088,6 +1088,12 @@ impl eframe::App for App {
 
                     ui.add_space(8.0);
 
+                    ui.label("Venv Path:");
+                    ui.text_edit_singleline(&mut self.provider_settings.venv_path);
+                    ui.small("Path to Python virtualenv directory (e.g., /home/qing/Project/vllm/.venv). Activated automatically before starting the server.");
+
+                    ui.add_space(8.0);
+
                     ui.label("Environment Script:");
                     ui.text_edit_singleline(&mut self.provider_settings.env_script);
                     ui.small("Path to env script to source before starting (e.g., /home/qing/Projects/.venv/bin/activate)");

@@ -92,6 +92,8 @@ pub struct ProviderSettings {
     pub health_endpoint: String,
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval_secs: u64,
+    #[serde(default)]
+    pub venv_path: String,
 }
 
 fn default_health_endpoint() -> String {
@@ -110,6 +112,7 @@ impl Default for ProviderSettings {
             additional_args: String::new(),
             health_endpoint: default_health_endpoint(),
             heartbeat_interval_secs: default_heartbeat_interval(),
+            venv_path: String::new(),
         }
     }
 }

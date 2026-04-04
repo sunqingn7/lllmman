@@ -80,6 +80,7 @@ impl LlmProvider for LlamaCppProvider {
             additional_args: String::new(),
             health_endpoint: "/health".to_string(),
             heartbeat_interval_secs: 6,
+            venv_path: String::new(),
         }
     }
 

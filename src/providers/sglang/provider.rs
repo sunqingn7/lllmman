@@ -79,6 +79,7 @@ impl LlmProvider for SglangProvider {
             additional_args: String::new(),
             health_endpoint: "/health".to_string(),
             heartbeat_interval_secs: 6,
+            venv_path: String::new(),
         }
     }
 
@@ -114,6 +115,13 @@ impl LlmProvider for SglangProvider {
     fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
         let mut cmd = String::new();
 
+        if !settings.venv_path.is_empty() {
+            cmd.push_str(&format!(
+                "source \"{}/bin/activate\" && ",
+                settings.venv_path
+            ));
+        }
+
         if let Some(gpu) = config.selected_gpu {
             cmd.push_str(&format!("CUDA_VISIBLE_DEVICES={} ", gpu));
         }
@@ -123,11 +131,6 @@ impl LlmProvider for SglangProvider {
         } else {
             &settings.binary_path
         };
-
-        if !settings.env_script.is_empty() {
-            cmd.push_str("bash -c ");
-            cmd.push_str(&format!("source \"{}\" exec ", settings.env_script));
-        }
 
         cmd.push_str(&format!("{} serve ", binary));
 
