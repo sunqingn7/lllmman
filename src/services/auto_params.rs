@@ -158,10 +158,6 @@ impl VllmSmartConfig {
     pub fn to_additional_args(&self) -> String {
         let mut args = Vec::new();
 
-        if self.swap_space > 0 {
-            args.push(format!("--swap-space {}", self.swap_space));
-        }
-
         if self.tensor_parallel_size > 1 {
             args.push(format!(
                 "--tensor-parallel-size {}",

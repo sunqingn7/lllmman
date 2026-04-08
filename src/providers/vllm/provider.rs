@@ -3,7 +3,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::core::{
-    DetectedServer, LlmProvider, ModelInfo, ProviderConfig, ProviderError, ProviderSettings, Result,
+    DetectedServer, LlmProvider, ModelInfo, OptionValueType, ProviderConfig, ProviderError,
+    ProviderOption, ProviderSettings, Result,
 };
 use crate::models::ModelType;
 
@@ -99,6 +100,60 @@ impl LlmProvider for VllmProvider {
         cmd.spawn().map_err(ProviderError::from)
     }
 
+    fn get_options(&self) -> Vec<ProviderOption> {
+        vec![
+            ProviderOption {
+                id: "temperature".to_string(),
+                name: "Temperature".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.7".to_string(),
+                description: "Sampling temperature (0.0-2.0)".to_string(),
+            },
+            ProviderOption {
+                id: "top_k".to_string(),
+                name: "Top-K".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "40".to_string(),
+                description: "Top-K sampling (0-100)".to_string(),
+            },
+            ProviderOption {
+                id: "top_p".to_string(),
+                name: "Top-P".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.95".to_string(),
+                description: "Top-P (nucleus) sampling (0.0-1.0)".to_string(),
+            },
+            ProviderOption {
+                id: "min_p".to_string(),
+                name: "Min-P".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.05".to_string(),
+                description: "Min-P sampling (0.0-1.0)".to_string(),
+            },
+            ProviderOption {
+                id: "presence_penalty".to_string(),
+                name: "Presence Penalty".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.0".to_string(),
+                description: "Presence penalty (-2.0-2.0)".to_string(),
+            },
+            ProviderOption {
+                id: "repetition_penalty".to_string(),
+                name: "Repetition Penalty".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "1.1".to_string(),
+                description: "Repetition penalty (0.0-5.0)".to_string(),
+            },
+            ProviderOption {
+                id: "additional_args".to_string(),
+                name: "Additional CLI Args".to_string(),
+                value_type: OptionValueType::String,
+                default_value: String::new(),
+                description: "Additional command-line arguments (space-separated)".to_string(),
+            },
+        ]
+    }
+
     fn supported_quantizations(&self) -> Vec<&'static str> {
         vec![
             "fp8",
@@ -112,6 +167,10 @@ impl LlmProvider for VllmProvider {
             "awq",
             "squeezellm",
         ]
+    }
+
+    fn supports_gguf(&self) -> bool {
+        false
     }
 
     fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
@@ -146,12 +205,39 @@ impl LlmProvider for VllmProvider {
 
         cmd.push_str("serve ");
 
-        if !config.huggingface_id.is_empty() {
-            cmd.push_str(&format!("\"{}\" ", config.huggingface_id));
-        } else if config.model_path.contains('/') && Path::new(&config.model_path).exists() {
-            cmd.push_str(&format!("\"{}\" ", config.model_path));
+        // For vLLM, try to find the model in HF cache
+        // Priority: model_path (if exists) -> model_path (in cache) -> huggingface_id (in cache) -> huggingface_id
+        let model_arg = if !config.model_path.is_empty() {
+            // First check if model_path is already a valid local path
+            if Path::new(&config.model_path).exists() {
+                config.model_path.clone()
+            } else {
+                // Try to find in HF cache using model_path name
+                if let Some(hf_path) = find_huggingface_model_path(&config.model_path) {
+                    hf_path
+                } else if !config.huggingface_id.is_empty() {
+                    // Try using huggingface_id as fallback
+                    if let Some(hf_path) = find_huggingface_model_path(&config.huggingface_id) {
+                        hf_path
+                    } else {
+                        config.huggingface_id.clone()
+                    }
+                } else {
+                    config.model_path.clone()
+                }
+            }
+        } else if !config.huggingface_id.is_empty() {
+            if let Some(hf_path) = find_huggingface_model_path(&config.huggingface_id) {
+                hf_path
+            } else {
+                config.huggingface_id.clone()
+            }
         } else {
-            cmd.push_str(&format!("{} ", config.model_path));
+            String::new()
+        };
+
+        if !model_arg.is_empty() {
+            cmd.push_str(&format!("\"{}\" ", model_arg));
         }
 
         if config.context_size > 0 {
@@ -167,12 +253,58 @@ impl LlmProvider for VllmProvider {
             ));
         }
 
-        if config.threads > 0 {
-            cmd.push_str(&format!("--max-num-seqs {} ", config.threads));
-        }
-
         if config.batch_size > 0 {
             cmd.push_str(&format!("--max-num-batched-tokens {} ", config.batch_size));
+        }
+
+        let mut gen_config = serde_json::Map::new();
+        let mut has_sampling = false;
+
+        if let Some(temp) = config.temperature {
+            gen_config.insert("temperature".to_string(), serde_json::Value::from(temp));
+            has_sampling = true;
+        }
+        if let Some(top_k) = config.top_k {
+            gen_config.insert("top_k".to_string(), serde_json::Value::from(top_k));
+            has_sampling = true;
+        }
+        if let Some(top_p) = config.top_p {
+            gen_config.insert("top_p".to_string(), serde_json::Value::from(top_p));
+            has_sampling = true;
+        }
+        if let Some(min_p) = config.min_p {
+            gen_config.insert("min_p".to_string(), serde_json::Value::from(min_p));
+            has_sampling = true;
+        }
+        if let Some(presence_pen) = config.presence_penalty {
+            gen_config.insert(
+                "presence_penalty".to_string(),
+                serde_json::Value::from(presence_pen),
+            );
+            has_sampling = true;
+        }
+        if let Some(repeat_pen) = config.repetition_penalty {
+            gen_config.insert(
+                "repetition_penalty".to_string(),
+                serde_json::Value::from(repeat_pen),
+            );
+            has_sampling = true;
+        }
+
+        if has_sampling {
+            let gen_config_str = serde_json::to_string(&gen_config).unwrap_or_default();
+            cmd.push_str(&format!(
+                "--override-generation-config '{}' ",
+                gen_config_str
+            ));
+        }
+
+        if !config.huggingface_id.is_empty() {
+            cmd.push_str(&format!("--hf-config-path {} ", config.huggingface_id));
+        }
+
+        if !config.tokenizer.is_empty() {
+            cmd.push_str(&format!("--tokenizer {} ", config.tokenizer));
         }
 
         if !config.cache_type_k.is_empty() {
@@ -503,4 +635,214 @@ fn detect_quantization_and_moe(model_dir: &Path) -> (String, bool) {
 #[allow(dead_code)]
 fn detect_quantization(model_dir: &Path) -> String {
     detect_quantization_and_moe(model_dir).0
+}
+
+fn find_huggingface_model_path(model_id: &str) -> Option<String> {
+    // Check common HF cache locations
+    let possible_paths = [
+        dirs::cache_dir().map(|p| {
+            p.join("huggingface")
+                .join("hub")
+                .join(format!("models--{}", model_id.replace('/', "--")))
+        }),
+        dirs::home_dir().map(|p| {
+            p.join(".cache")
+                .join("huggingface")
+                .join("hub")
+                .join(format!("models--{}", model_id.replace('/', "--")))
+        }),
+    ];
+
+    for path_opt in possible_paths.iter().flatten() {
+        let path = path_opt;
+        if !path.exists() {
+            continue;
+        }
+
+        // Look for snapshots
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let snapshot_path = entry.path();
+                if !snapshot_path.is_dir() {
+                    continue;
+                }
+
+                // Check for GGUF files in the snapshot
+                if let Ok(sub_entries) = std::fs::read_dir(&snapshot_path) {
+                    for sub in sub_entries.flatten() {
+                        let sub_path = sub.path();
+                        if sub_path.is_dir() {
+                            // Check if it contains GGUF files
+                            if let Ok(gguf_entries) = std::fs::read_dir(&sub_path) {
+                                for gguf in gguf_entries.flatten() {
+                                    if gguf.path().to_string_lossy().ends_with(".gguf") {
+                                        return Some(sub_path.to_string_lossy().to_string());
+                                    }
+                                }
+                            }
+                        } else if sub_path.to_string_lossy().ends_with(".gguf") {
+                            return Some(snapshot_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract candidate repo IDs from a GGUF model path or HF repo ID.
+/// Returns a list of potential repo IDs to try, in priority order.
+fn extract_repo_candidates(path: &str) -> Vec<String> {
+    let mut candidates = Vec::new();
+
+    // 1. If path looks like a HF repo ID (contains '/' and doesn't start with '/'), use it directly
+    let trimmed = path.trim();
+    if !trimmed.is_empty()
+        && trimmed.contains('/')
+        && !trimmed.starts_with('/')
+        && !trimmed.starts_with('.')
+    {
+        candidates.push(trimmed.to_string());
+    }
+
+    // 2. Try HF cache pattern: models--user--repo
+    let path_obj = Path::new(path);
+    let mut current = path_obj;
+    for _ in 0..8 {
+        if let Some(parent) = current.parent() {
+            if let Some(dir_name) = parent.file_name() {
+                let dir_str = dir_name.to_string_lossy();
+                if dir_str.starts_with("models--") {
+                    if let Some(repo_id) = dir_str.strip_prefix("models--") {
+                        candidates.push(repo_id.replace("--", "/"));
+                    }
+                    break;
+                }
+            }
+            current = parent;
+        } else {
+            break;
+        }
+    }
+
+    // 3. Try filename-based extraction (e.g. "gemma-4-31B-it-GGUF.Q4_K_M.gguf" -> "gemma-4-31B-it-GGUF")
+    if let Some(file_name) = path_obj
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+    {
+        let name_without_ext = file_name.rsplitn(2, '.').last().unwrap_or(&file_name);
+        if name_without_ext.contains('-') {
+            candidates.push(name_without_ext.to_string());
+        }
+    }
+
+    // 4. Try parent directory name
+    if let Some(parent_name) = path_obj.parent().and_then(|p| p.file_name()) {
+        let parent_str = parent_name.to_string_lossy();
+        if parent_str.contains('-')
+            && parent_str != "snapshots"
+            && !parent_str.starts_with("models--")
+        {
+            candidates.push(parent_str.to_string());
+        }
+    }
+
+    candidates.dedup();
+    candidates
+}
+
+/// Get the tokenizer source for a GGUF model from HuggingFace.
+/// Returns (huggingface_id, tokenizer_repo, log_messages) if found.
+pub fn get_gguf_tokenizer_info(gguf_path: &str) -> Option<(String, String, Vec<String>)> {
+    let candidates = extract_repo_candidates(gguf_path);
+    let mut logs = Vec::new();
+    if candidates.is_empty() {
+        logs.push(format!(
+            "[vLLM GGUF] No repo candidates found for: {}",
+            gguf_path
+        ));
+        return None;
+    }
+
+    logs.push(format!(
+        "[vLLM GGUF] Trying repo candidates: {:?}",
+        candidates
+    ));
+
+    for repo_id in &candidates {
+        // If the repo looks like a GGUF repo (ends with -GGUF or contains -GGUF-)
+        if repo_id.ends_with("-GGUF") || repo_id.contains("-GGUF-") {
+            let base_repo = repo_id
+                .split("-GGUF")
+                .next()?
+                .trim_end_matches('-')
+                .to_string();
+            let api_url = format!("https://huggingface.co/api/models/{}", base_repo);
+
+            logs.push(format!("[vLLM GGUF] Checking base repo: {}", base_repo));
+
+            if let Ok(resp) = reqwest::blocking::get(&api_url) {
+                if resp.status().is_success() {
+                    if let Ok(json) = resp.text() {
+                        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json) {
+                            if obj.get("modelId").is_some() {
+                                logs.push(format!(
+                                    "[vLLM GGUF] Found! hf_id={}, tokenizer={}",
+                                    repo_id, base_repo
+                                ));
+                                return Some((repo_id.clone(), base_repo, logs));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Try progressively shorter names
+            let parts: Vec<&str> = repo_id.split('-').collect();
+            for i in (1..parts.len()).rev() {
+                let candidate = parts[..i].join("-");
+                let api_url = format!("https://huggingface.co/api/models/{}", candidate);
+                logs.push(format!("[vLLM GGUF] Trying fallback: {}", candidate));
+                if let Ok(resp) = reqwest::blocking::get(&api_url) {
+                    if resp.status().is_success() {
+                        logs.push(format!(
+                            "[vLLM GGUF] Found via fallback! tokenizer={}",
+                            candidate
+                        ));
+                        return Some((repo_id.clone(), candidate, logs));
+                    }
+                }
+            }
+        } else {
+            // For non-GGUF-named repos (e.g. filename-based), try it directly
+            let api_url = format!("https://huggingface.co/api/models/{}", repo_id);
+            logs.push(format!(
+                "[vLLM GGUF] Trying non-GGUF candidate: {}",
+                repo_id
+            ));
+            if let Ok(resp) = reqwest::blocking::get(&api_url) {
+                if resp.status().is_success() {
+                    if let Ok(json) = resp.text() {
+                        if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json) {
+                            if obj.get("modelId").is_some() {
+                                logs.push(format!(
+                                    "[vLLM GGUF] Found non-GGUF! hf_id={}, tokenizer={}",
+                                    repo_id, repo_id
+                                ));
+                                return Some((repo_id.clone(), repo_id.clone(), logs));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    logs.push(format!(
+        "[vLLM GGUF] No valid HuggingFace repo found for: {}",
+        gguf_path
+    ));
+    None
 }

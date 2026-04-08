@@ -77,7 +77,7 @@ impl TuiApp {
         let mut server_config = provider.get_config_template();
 
         // Load saved model config from GUI as fallback
-        if let Some(saved_config) = get_fallback_config() {
+        if let Some(saved_config) = get_fallback_config(&selected_provider) {
             server_config.context_size = saved_config.context_size;
             server_config.batch_size = saved_config.batch_size;
             server_config.gpu_layers = saved_config.gpu_layers;
@@ -168,15 +168,21 @@ impl TuiApp {
 
     fn filter_models(&mut self) {
         let query = self.search_query.to_lowercase();
-        self.filtered_models = if query.is_empty() {
-            self.models.clone()
-        } else {
-            self.models
-                .iter()
-                .filter(|m| m.name.to_lowercase().contains(&query))
-                .cloned()
-                .collect()
-        };
+        let provider_supports_gguf = ProviderRegistry::get(&self.selected_provider)
+            .map(|p| p.supports_gguf())
+            .unwrap_or(true);
+        self.filtered_models = self
+            .models
+            .iter()
+            .filter(|m| {
+                let is_gguf = m.path.to_lowercase().ends_with(".gguf");
+                if is_gguf && !provider_supports_gguf {
+                    return false;
+                }
+                query.is_empty() || m.name.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect();
     }
 
     fn switch_provider(&mut self, provider_id: &str) {
@@ -342,7 +348,9 @@ impl TuiApp {
                                 if let Some(model) = self.filtered_models.get(idx) {
                                     self.server_config.model_path = model.path.clone();
                                     // Load saved config for this model if it exists
-                                    if let Some(saved) = load_model_config(&model.path) {
+                                    if let Some(saved) =
+                                        load_model_config(&model.path, &self.selected_provider)
+                                    {
                                         self.server_config.context_size = saved.context_size;
                                         self.server_config.batch_size = saved.batch_size;
                                         self.server_config.gpu_layers = saved.gpu_layers;
@@ -372,6 +380,7 @@ impl TuiApp {
                                     save_model_config(
                                         &self.server_config.model_path,
                                         &self.server_config,
+                                        &self.selected_provider,
                                     )
                                     .ok();
                                 }

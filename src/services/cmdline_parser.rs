@@ -100,10 +100,59 @@ pub fn parse_command_line(cmd_line: &str) -> ProviderConfig {
                 }
             }
             // For vLLM
-            "--gpu-memory-utilization" => {
+            "--max-num-batched-tokens" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse() {
+                        config.batch_size = val;
+                    }
+                    i += 1;
+                }
+            }
+            // Sampling parameters (common to all providers)
+            "--temperature" => {
                 if i + 1 < args.len() {
                     if let Ok(val) = args[i + 1].parse::<f32>() {
-                        config.gpu_layers = (val * 100.0) as i32;
+                        config.temperature = Some(val);
+                    }
+                    i += 1;
+                }
+            }
+            "--top-k" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<i32>() {
+                        config.top_k = Some(val);
+                    }
+                    i += 1;
+                }
+            }
+            "--top-p" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.top_p = Some(val);
+                    }
+                    i += 1;
+                }
+            }
+            "--min-p" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.min_p = Some(val);
+                    }
+                    i += 1;
+                }
+            }
+            "--presence-penalty" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.presence_penalty = Some(val);
+                    }
+                    i += 1;
+                }
+            }
+            "--repetition-penalty" => {
+                if i + 1 < args.len() {
+                    if let Ok(val) = args[i + 1].parse::<f32>() {
+                        config.repetition_penalty = Some(val);
                     }
                     i += 1;
                 }
@@ -116,22 +165,13 @@ pub fn parse_command_line(cmd_line: &str) -> ProviderConfig {
                     i += 1;
                 }
             }
-            "--max-num-seqs" => {
+            "--tokenizer" | "--tokenizer-path" => {
                 if i + 1 < args.len() {
-                    if let Ok(val) = args[i + 1].parse() {
-                        config.threads = val;
-                    }
+                    config.tokenizer = args[i + 1].to_string();
                     i += 1;
                 }
             }
-            "--max-num-batched-tokens" => {
-                if i + 1 < args.len() {
-                    if let Ok(val) = args[i + 1].parse() {
-                        config.batch_size = val;
-                    }
-                    i += 1;
-                }
-            }
+            // --max-num-seqs is vLLM's max concurrent sequences, no matching ProviderConfig field
             // Collect unrecognized args as additional_args
             _ => {
                 // If it looks like a path and no model_path set yet, treat as model path

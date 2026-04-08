@@ -97,8 +97,24 @@ pub struct ModelConfigEntry {
     pub cache_type_k: String,
     pub cache_type_v: String,
     pub num_prompt_tracking: u32,
-    pub additional_args: String,
+    pub additional_args: HashMap<String, String>,
     pub gpu_allocation: GpuAllocation,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_k: Option<i32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub min_p: Option<f32>,
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub repetition_penalty: Option<f32>,
+    #[serde(default)]
+    pub enable_thinking: Option<bool>,
+    #[serde(default)]
+    pub tokenizer: String,
 }
 
 impl Default for ModelConfigEntry {
@@ -114,8 +130,16 @@ impl Default for ModelConfigEntry {
             cache_type_k: "q4_0".to_string(),
             cache_type_v: "q4_0".to_string(),
             num_prompt_tracking: 1,
-            additional_args: String::new(),
+            additional_args: HashMap::new(),
             gpu_allocation: GpuAllocation::All,
+            temperature: None,
+            top_k: None,
+            top_p: None,
+            min_p: None,
+            presence_penalty: None,
+            repetition_penalty: None,
+            enable_thinking: None,
+            tokenizer: String::new(),
         }
     }
 }

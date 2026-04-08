@@ -3,9 +3,12 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::core::{
-    DetectedServer, LlmProvider, ModelInfo, ProviderConfig, ProviderError, ProviderSettings, Result,
+    DetectedServer, LlmProvider, ModelInfo, OptionValueType, ProviderConfig, ProviderError,
+    ProviderOption, ProviderSettings, Result,
 };
 use crate::models::ModelType;
+
+use dirs;
 
 pub struct SglangProvider {
     id: &'static str,
@@ -73,8 +76,17 @@ impl LlmProvider for SglangProvider {
     }
 
     fn default_settings(&self) -> ProviderSettings {
+        let binary_path = std::process::Command::new("which")
+            .arg("sglang")
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "sglang".to_string());
+
         ProviderSettings {
-            binary_path: "sglang".to_string(),
+            binary_path,
             env_script: String::new(),
             additional_args: String::new(),
             health_endpoint: "/health".to_string(),
@@ -112,6 +124,10 @@ impl LlmProvider for SglangProvider {
         ]
     }
 
+    fn supports_gguf(&self) -> bool {
+        false
+    }
+
     fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
         let mut cmd = String::new();
 
@@ -134,17 +150,44 @@ impl LlmProvider for SglangProvider {
 
         cmd.push_str(&format!("{} serve ", binary));
 
-        if !config.huggingface_id.is_empty() {
-            cmd.push_str(&format!("--model \"{}\" ", config.huggingface_id));
-        } else if config.model_path.contains('/') && Path::new(&config.model_path).exists() {
-            cmd.push_str(&format!("--model-path \"{}\" ", config.model_path));
-        } else if config.model_path.contains('/')
-            && !config.model_path.starts_with('/')
-            && !config.model_path.starts_with('.')
-        {
-            cmd.push_str(&format!("--model \"{}\" ", config.model_path));
+        // For SGLang, try to find the model in HF cache first
+        let model_arg = if !config.model_path.is_empty() {
+            if Path::new(&config.model_path).exists() {
+                config.model_path.clone()
+            } else {
+                if let Some(hf_path) = find_huggingface_model_path(&config.model_path) {
+                    hf_path
+                } else if !config.huggingface_id.is_empty() {
+                    if let Some(hf_path) = find_huggingface_model_path(&config.huggingface_id) {
+                        hf_path
+                    } else {
+                        config.huggingface_id.clone()
+                    }
+                } else {
+                    config.model_path.clone()
+                }
+            }
+        } else if !config.huggingface_id.is_empty() {
+            if let Some(hf_path) = find_huggingface_model_path(&config.huggingface_id) {
+                hf_path
+            } else {
+                config.huggingface_id.clone()
+            }
         } else {
-            cmd.push_str(&format!("--model-path {} ", config.model_path));
+            String::new()
+        };
+
+        if !model_arg.is_empty() {
+            if model_arg.starts_with('/') || model_arg.contains('/') {
+                cmd.push_str(&format!("--model-path \"{}\" ", model_arg));
+            } else if model_arg.contains('/')
+                && !model_arg.starts_with('/')
+                && !model_arg.starts_with('.')
+            {
+                cmd.push_str(&format!("--model \"{}\" ", model_arg));
+            } else {
+                cmd.push_str(&format!("--model-path {} ", model_arg));
+            }
         }
 
         if config.context_size > 0 {
@@ -157,17 +200,6 @@ impl LlmProvider for SglangProvider {
             cmd.push_str(&format!(
                 "--mem-fraction-static {:.2} ",
                 config.gpu_layers as f32 / 100.0
-            ));
-        }
-
-        if config.threads > 0 {
-            cmd.push_str(&format!("--tp-size {} ", config.threads));
-        }
-
-        if config.batch_size > 0 {
-            cmd.push_str(&format!(
-                "--schedule-conservativeness {} ",
-                config.batch_size
             ));
         }
 
@@ -209,8 +241,6 @@ impl LlmProvider for SglangProvider {
             }
         }
 
-        scan_gguf_files(path_obj, &mut models);
-
         models
     }
 
@@ -234,6 +264,60 @@ impl LlmProvider for SglangProvider {
             model_type: ModelType::TextOnly,
             is_moe: false,
         })
+    }
+
+    fn get_options(&self) -> Vec<ProviderOption> {
+        vec![
+            ProviderOption {
+                id: "temperature".to_string(),
+                name: "Temperature".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.7".to_string(),
+                description: "Sampling temperature (0.0-2.0)".to_string(),
+            },
+            ProviderOption {
+                id: "top_k".to_string(),
+                name: "Top-K".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "40".to_string(),
+                description: "Top-K sampling (0-100)".to_string(),
+            },
+            ProviderOption {
+                id: "top_p".to_string(),
+                name: "Top-P".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.95".to_string(),
+                description: "Top-P (nucleus) sampling (0.0-1.0)".to_string(),
+            },
+            ProviderOption {
+                id: "min_p".to_string(),
+                name: "Min-P".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.05".to_string(),
+                description: "Min-P sampling (0.0-1.0)".to_string(),
+            },
+            ProviderOption {
+                id: "presence_penalty".to_string(),
+                name: "Presence Penalty".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.0".to_string(),
+                description: "Presence penalty (-2.0-2.0)".to_string(),
+            },
+            ProviderOption {
+                id: "repetition_penalty".to_string(),
+                name: "Repetition Penalty".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "1.1".to_string(),
+                description: "Repetition penalty (0.0-5.0)".to_string(),
+            },
+            ProviderOption {
+                id: "additional_args".to_string(),
+                name: "Additional CLI Args".to_string(),
+                value_type: OptionValueType::String,
+                default_value: String::new(),
+                description: "Additional command-line arguments (space-separated)".to_string(),
+            },
+        ]
     }
 
     fn default_model_directories(&self) -> Vec<String> {
@@ -341,6 +425,54 @@ impl LlmProvider for SglangProvider {
                         i += 1;
                     }
                 }
+                "--temperature" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.temperature = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--top-k" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<i32>() {
+                            config.top_k = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--top-p" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.top_p = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--min-p" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.min_p = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--presence-penalty" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.presence_penalty = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--repetition-penalty" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.repetition_penalty = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
                 _ => {
                     // Collect unknown arguments
                     if arg.starts_with('-') {
@@ -375,6 +507,32 @@ fn parse_hf_model_dir(path: &Path) -> Option<ModelInfo> {
     let repo_id = dir_name.strip_prefix("models--")?;
     let name = repo_id.replace("--", "/");
 
+    let snapshot_dir = path.join("snapshots");
+    if !snapshot_dir.exists() {
+        return None;
+    }
+
+    let mut has_config_json = false;
+    if let Ok(snapshot_entries) = std::fs::read_dir(&snapshot_dir) {
+        for snapshot in snapshot_entries.flatten() {
+            if snapshot.path().is_dir() {
+                if let Ok(sub_entries) = std::fs::read_dir(snapshot.path()) {
+                    for sub in sub_entries.flatten() {
+                        if let Some(name_str) = sub.file_name().to_str() {
+                            if name_str == "config.json" {
+                                has_config_json = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !has_config_json {
+        return None;
+    }
+
     let size_gb = calculate_dir_size(&path.to_string_lossy());
 
     let quantization = detect_quantization(path);
@@ -387,59 +545,6 @@ fn parse_hf_model_dir(path: &Path) -> Option<ModelInfo> {
         model_type: ModelType::TextOnly,
         is_moe: false,
     })
-}
-
-fn scan_gguf_files(dir: &Path, models: &mut Vec<ModelInfo>) {
-    fn scan_recursive(dir: &Path, models: &mut Vec<ModelInfo>) {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    scan_recursive(&path, models);
-                } else if let Some(ext) = path.extension() {
-                    if ext.to_string_lossy().to_lowercase() == "gguf" {
-                        if let Some(model) = parse_gguf_file(&path) {
-                            models.push(model);
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    scan_recursive(dir, models);
-}
-
-fn parse_gguf_file(path: &Path) -> Option<ModelInfo> {
-    let filename = path.file_name()?.to_string_lossy().to_string();
-    let metadata = std::fs::metadata(path).ok()?;
-    let size_gb = metadata.len() as f32 / (1024.0 * 1024.0 * 1024.0);
-
-    let quantization = extract_quantization(&filename);
-
-    Some(ModelInfo {
-        path: path.to_string_lossy().to_string(),
-        name: filename.clone(),
-        size_gb: (size_gb * 100.0).round() / 100.0,
-        quantization,
-        model_type: ModelType::TextOnly,
-        is_moe: filename.to_lowercase().contains("moe"),
-    })
-}
-
-fn extract_quantization(filename: &str) -> String {
-    let lower = filename.to_lowercase();
-    let quantizations = [
-        "q4_0", "q4_1", "q5_0", "q5_1", "q6_0", "q8_0", "f16", "q2_k", "q3_k", "q4_k", "q5_k",
-        "q6_k",
-    ];
-
-    for q in &quantizations {
-        if lower.contains(*q) {
-            return q.to_string();
-        }
-    }
-    "unknown".to_string()
 }
 
 fn calculate_dir_size(path: &str) -> f32 {
@@ -506,4 +611,55 @@ fn detect_quantization(model_dir: &Path) -> String {
     }
 
     "unknown".to_string()
+}
+
+fn find_huggingface_model_path(model_id: &str) -> Option<String> {
+    let possible_paths = [
+        dirs::cache_dir().map(|p| {
+            p.join("huggingface")
+                .join("hub")
+                .join(format!("models--{}", model_id.replace('/', "--")))
+        }),
+        dirs::home_dir().map(|p| {
+            p.join(".cache")
+                .join("huggingface")
+                .join("hub")
+                .join(format!("models--{}", model_id.replace('/', "--")))
+        }),
+    ];
+
+    for path_opt in possible_paths.iter().flatten() {
+        let path = path_opt;
+        if !path.exists() {
+            continue;
+        }
+
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let snapshot_path = entry.path();
+                if !snapshot_path.is_dir() {
+                    continue;
+                }
+
+                if let Ok(sub_entries) = std::fs::read_dir(&snapshot_path) {
+                    for sub in sub_entries.flatten() {
+                        let sub_path = sub.path();
+                        if sub_path.is_dir() {
+                            if let Ok(gguf_entries) = std::fs::read_dir(&sub_path) {
+                                for gguf in gguf_entries.flatten() {
+                                    if gguf.path().to_string_lossy().ends_with(".gguf") {
+                                        return Some(sub_path.to_string_lossy().to_string());
+                                    }
+                                }
+                            }
+                        } else if sub_path.to_string_lossy().ends_with(".gguf") {
+                            return Some(snapshot_path.to_string_lossy().to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }

@@ -1,6 +1,6 @@
 pub mod provider;
 
-pub use provider::VllmProvider;
+pub use provider::{get_gguf_tokenizer_info, VllmProvider};
 
 use crate::core::LlmProvider;
 use crate::register_provider;

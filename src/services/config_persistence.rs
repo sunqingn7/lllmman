@@ -71,7 +71,11 @@ pub fn save_model_configs(configs: &ModelConfigs) -> Result<(), String> {
     fs::write(path, content).map_err(|e| e.to_string())
 }
 
-pub fn save_model_config(model_path: &str, config: &ProviderConfig) -> Result<(), String> {
+pub fn save_model_config(
+    model_path: &str,
+    config: &ProviderConfig,
+    provider_id: &str,
+) -> Result<(), String> {
     let mut configs = load_model_configs();
 
     let key = if !config.huggingface_id.is_empty() {
@@ -79,6 +83,13 @@ pub fn save_model_config(model_path: &str, config: &ProviderConfig) -> Result<()
     } else {
         model_path.to_string()
     };
+
+    let mut additional_args = configs
+        .configs
+        .get(&key)
+        .map(|existing| existing.additional_args.clone())
+        .unwrap_or_default();
+    additional_args.insert(provider_id.to_string(), config.additional_args.clone());
 
     configs.configs.insert(
         key,
@@ -93,8 +104,16 @@ pub fn save_model_config(model_path: &str, config: &ProviderConfig) -> Result<()
             cache_type_k: config.cache_type_k.clone(),
             cache_type_v: config.cache_type_v.clone(),
             num_prompt_tracking: config.num_prompt_tracking,
-            additional_args: config.additional_args.clone(),
+            additional_args: additional_args,
             gpu_allocation: config.gpu_allocation.clone(),
+            temperature: config.temperature,
+            top_k: config.top_k,
+            top_p: config.top_p,
+            min_p: config.min_p,
+            presence_penalty: config.presence_penalty,
+            repetition_penalty: config.repetition_penalty,
+            enable_thinking: config.enable_thinking,
+            tokenizer: config.tokenizer.clone(),
         },
     );
 
@@ -107,10 +126,15 @@ pub fn save_model_config(model_path: &str, config: &ProviderConfig) -> Result<()
     save_model_configs(&configs)
 }
 
-pub fn load_model_config(model_path: &str) -> Option<ProviderConfig> {
+pub fn load_model_config(model_path: &str, provider_id: &str) -> Option<ProviderConfig> {
     let configs = load_model_configs();
 
     if let Some(entry) = configs.configs.get(model_path) {
+        let additional_args = entry
+            .additional_args
+            .get(provider_id)
+            .cloned()
+            .unwrap_or_default();
         return Some(ProviderConfig {
             model_path: if !entry.huggingface_id.is_empty() {
                 String::new()
@@ -127,8 +151,9 @@ pub fn load_model_config(model_path: &str) -> Option<ProviderConfig> {
             cache_type_k: entry.cache_type_k.clone(),
             cache_type_v: entry.cache_type_v.clone(),
             num_prompt_tracking: entry.num_prompt_tracking,
-            additional_args: entry.additional_args.clone(),
+            additional_args: additional_args,
             gpu_allocation: entry.gpu_allocation.clone(),
+            tokenizer: entry.tokenizer.clone(),
             ..Default::default()
         });
     }
@@ -136,11 +161,16 @@ pub fn load_model_config(model_path: &str) -> Option<ProviderConfig> {
     None
 }
 
-pub fn get_fallback_config() -> Option<ProviderConfig> {
+pub fn get_fallback_config(provider_id: &str) -> Option<ProviderConfig> {
     let configs = load_model_configs();
 
     if let Some(last_path) = configs.last_model_path {
         if let Some(entry) = configs.configs.get(&last_path) {
+            let additional_args = entry
+                .additional_args
+                .get(provider_id)
+                .cloned()
+                .unwrap_or_default();
             return Some(ProviderConfig {
                 model_path: if !entry.huggingface_id.is_empty() {
                     String::new()
@@ -157,8 +187,9 @@ pub fn get_fallback_config() -> Option<ProviderConfig> {
                 cache_type_k: entry.cache_type_k.clone(),
                 cache_type_v: entry.cache_type_v.clone(),
                 num_prompt_tracking: entry.num_prompt_tracking,
-                additional_args: entry.additional_args.clone(),
+                additional_args: additional_args,
                 gpu_allocation: entry.gpu_allocation.clone(),
+                tokenizer: entry.tokenizer.clone(),
                 ..Default::default()
             });
         }
@@ -189,7 +220,10 @@ pub fn save_provider_settings(settings: &HashMap<String, ProviderSettings>) -> R
 
 pub fn load_provider_settings_for(provider_id: &str) -> ProviderSettings {
     let all = load_provider_settings();
-    all.get(provider_id).cloned().unwrap_or_default()
+    match all.get(provider_id) {
+        Some(settings) => settings.clone(),
+        None => ProviderSettings::default(),
+    }
 }
 
 pub fn save_provider_settings_for(

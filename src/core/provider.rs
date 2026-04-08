@@ -151,6 +151,22 @@ pub struct ProviderConfig {
     pub selected_gpu: Option<u32>,
     #[serde(default)]
     pub cpu_offload: CpuOffloadMode,
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub top_k: Option<i32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub min_p: Option<f32>,
+    #[serde(default)]
+    pub presence_penalty: Option<f32>,
+    #[serde(default)]
+    pub repetition_penalty: Option<f32>,
+    #[serde(default)]
+    pub enable_thinking: Option<bool>,
+    #[serde(default)]
+    pub tokenizer: String,
 }
 
 impl Default for ProviderConfig {
@@ -172,6 +188,14 @@ impl Default for ProviderConfig {
             gpu_allocation: crate::models::GpuAllocation::All,
             selected_gpu: None,
             cpu_offload: CpuOffloadMode::Auto,
+            temperature: None,
+            top_k: None,
+            top_p: None,
+            min_p: None,
+            presence_penalty: None,
+            repetition_penalty: None,
+            enable_thinking: None,
+            tokenizer: String::new(),
         }
     }
 }
@@ -258,6 +282,10 @@ pub trait LlmProvider: Send + Sync {
     }
 
     fn supported_quantizations(&self) -> Vec<&'static str>;
+
+    fn supports_gguf(&self) -> bool {
+        false
+    }
 
     fn scan_models(&self, path: &str) -> Vec<ModelInfo>;
     fn add_model(&self, path: &str) -> Result<ModelInfo>;

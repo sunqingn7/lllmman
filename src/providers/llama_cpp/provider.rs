@@ -1,8 +1,8 @@
 use std::process::{Command, Stdio};
 
 use crate::core::{
-    CpuOffloadMode, DetectedServer, LlmProvider, ModelInfo, ProviderConfig, ProviderError,
-    ProviderSettings, Result,
+    CpuOffloadMode, DetectedServer, LlmProvider, ModelInfo, OptionValueType, ProviderConfig,
+    ProviderError, ProviderOption, ProviderSettings, Result,
 };
 use crate::models::ModelType;
 
@@ -74,8 +74,17 @@ impl LlmProvider for LlamaCppProvider {
     }
 
     fn default_settings(&self) -> ProviderSettings {
+        let binary_path = std::process::Command::new("which")
+            .arg("llama-server")
+            .output()
+            .ok()
+            .and_then(|out| String::from_utf8(out.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "llama-server".to_string());
+
         ProviderSettings {
-            binary_path: "llama-server".to_string(),
+            binary_path,
             env_script: String::new(),
             additional_args: String::new(),
             health_endpoint: "/health".to_string(),
@@ -104,6 +113,10 @@ impl LlmProvider for LlamaCppProvider {
         vec![
             "f16", "q8_0", "q6_0", "q5_1", "q5_0", "q4_1", "q4_0", "q3_1", "q3_0", "q2_1", "q2_0",
         ]
+    }
+
+    fn supports_gguf(&self) -> bool {
+        true
     }
 
     fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
@@ -172,6 +185,30 @@ impl LlmProvider for LlamaCppProvider {
                 cmd.push_str(&format!(" --cache-type-v \"{}\"", config.cache_type_v));
             }
 
+            if let Some(temp) = config.temperature {
+                cmd.push_str(&format!(" --temperature {}", temp));
+            }
+            if let Some(top_k) = config.top_k {
+                cmd.push_str(&format!(" --top-k {}", top_k));
+            }
+            if let Some(top_p) = config.top_p {
+                cmd.push_str(&format!(" --top-p {}", top_p));
+            }
+            if let Some(min_p) = config.min_p {
+                cmd.push_str(&format!(" --min-p {}", min_p));
+            }
+            if let Some(presence_pen) = config.presence_penalty {
+                cmd.push_str(&format!(" --presence-penalty {}", presence_pen));
+            }
+            if let Some(repeat_pen) = config.repetition_penalty {
+                cmd.push_str(&format!(" --repeat-penalty {}", repeat_pen));
+            }
+            if let Some(enable_thinking) = config.enable_thinking {
+                if enable_thinking {
+                    cmd.push_str(" --reasoning-format deepseek");
+                }
+            }
+
             for arg in config.additional_args.split_whitespace() {
                 if !arg.is_empty() {
                     cmd.push_str(&format!(" {}", arg));
@@ -184,48 +221,50 @@ impl LlmProvider for LlamaCppProvider {
                 }
             }
         } else {
-            cmd.push_str("bash -c ");
-            cmd.push_str(&format!("source \"{}\" exec ", settings.env_script));
-            cmd.push_str(&format!("\"{}\" ", binary));
+            let mut inner = String::new();
+            inner.push_str(&format!("source \"{}\" && ", settings.env_script));
+            inner.push_str(&format!("\"{}\" ", binary));
             if !config.huggingface_id.is_empty() {
-                cmd.push_str(&format!("-hf \"{}\" ", config.huggingface_id));
+                inner.push_str(&format!("-hf \"{}\" ", config.huggingface_id));
             } else {
-                cmd.push_str(&format!("-m \"{}\" ", config.model_path));
+                inner.push_str(&format!("-m \"{}\" ", config.model_path));
             }
             if config.context_size > 0 {
-                cmd.push_str(&format!("-c {} ", config.context_size));
+                inner.push_str(&format!("-c {} ", config.context_size));
             }
             if config.batch_size > 0 {
-                cmd.push_str(&format!("-b {} ", config.batch_size));
+                inner.push_str(&format!("-b {} ", config.batch_size));
             }
-            cmd.push_str(&format!("-ngl {} ", effective_gpu_layers));
+            inner.push_str(&format!("-ngl {} ", effective_gpu_layers));
             if config.threads > 0 {
-                cmd.push_str(&format!("-t {} ", config.threads));
+                inner.push_str(&format!("-t {} ", config.threads));
             }
-            cmd.push_str(&format!("--port {} ", config.port));
-            cmd.push_str(&format!("--host {} ", config.host));
+            inner.push_str(&format!("--port {} ", config.port));
+            inner.push_str(&format!("--host {} ", config.host));
             if config.num_prompt_tracking > 0 {
-                cmd.push_str(&format!("-np {} ", config.num_prompt_tracking));
+                inner.push_str(&format!("-np {} ", config.num_prompt_tracking));
             }
 
             if !config.cache_type_k.is_empty() {
-                cmd.push_str(&format!("--cache-type-k \"{}\" ", config.cache_type_k));
+                inner.push_str(&format!("--cache-type-k \"{}\" ", config.cache_type_k));
             }
             if !config.cache_type_v.is_empty() {
-                cmd.push_str(&format!("--cache-type-v \"{}\" ", config.cache_type_v));
+                inner.push_str(&format!("--cache-type-v \"{}\" ", config.cache_type_v));
             }
 
             for arg in config.additional_args.split_whitespace() {
                 if !arg.is_empty() {
-                    cmd.push_str(&format!("{} ", arg));
+                    inner.push_str(&format!("{} ", arg));
                 }
             }
 
             for arg in settings.additional_args.split_whitespace() {
                 if !arg.is_empty() {
-                    cmd.push_str(&format!("{} ", arg));
+                    inner.push_str(&format!("{} ", arg));
                 }
             }
+
+            cmd.push_str(&format!("bash -c '{}'", inner));
         }
 
         cmd
@@ -296,6 +335,67 @@ impl LlmProvider for LlamaCppProvider {
         }
 
         dirs
+    }
+
+    fn get_options(&self) -> Vec<ProviderOption> {
+        vec![
+            ProviderOption {
+                id: "temperature".to_string(),
+                name: "Temperature".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.7".to_string(),
+                description: "Sampling temperature (0.0-2.0)".to_string(),
+            },
+            ProviderOption {
+                id: "top_k".to_string(),
+                name: "Top-K".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "40".to_string(),
+                description: "Top-K sampling (0-100)".to_string(),
+            },
+            ProviderOption {
+                id: "top_p".to_string(),
+                name: "Top-P".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.95".to_string(),
+                description: "Top-P (nucleus) sampling (0.0-1.0)".to_string(),
+            },
+            ProviderOption {
+                id: "min_p".to_string(),
+                name: "Min-P".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.05".to_string(),
+                description: "Min-P sampling (0.0-1.0)".to_string(),
+            },
+            ProviderOption {
+                id: "presence_penalty".to_string(),
+                name: "Presence Penalty".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "0.0".to_string(),
+                description: "Presence penalty (-2.0-2.0)".to_string(),
+            },
+            ProviderOption {
+                id: "repetition_penalty".to_string(),
+                name: "Repetition Penalty".to_string(),
+                value_type: OptionValueType::Number,
+                default_value: "1.1".to_string(),
+                description: "Repetition penalty (0.0-5.0)".to_string(),
+            },
+            ProviderOption {
+                id: "enable_thinking".to_string(),
+                name: "Enable Thinking".to_string(),
+                value_type: OptionValueType::Bool,
+                default_value: "false".to_string(),
+                description: "Enable thinking/deepseek reasoning".to_string(),
+            },
+            ProviderOption {
+                id: "additional_args".to_string(),
+                name: "Additional CLI Args".to_string(),
+                value_type: OptionValueType::String,
+                default_value: String::new(),
+                description: "Additional command-line arguments (space-separated)".to_string(),
+            },
+        ]
     }
 
     fn detect_running_servers(&self) -> Vec<DetectedServer> {
@@ -413,6 +513,61 @@ impl LlmProvider for LlamaCppProvider {
                         i += 1;
                     }
                 }
+                "--temperature" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.temperature = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--top-k" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<i32>() {
+                            config.top_k = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--top-p" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.top_p = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--min-p" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.min_p = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--presence-penalty" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.presence_penalty = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--repeat-penalty" => {
+                    if i + 1 < args.len() {
+                        if let Ok(val) = args[i + 1].parse::<f32>() {
+                            config.repetition_penalty = Some(val);
+                        }
+                        i += 1;
+                    }
+                }
+                "--reasoning-format" => {
+                    if i + 1 < args.len() {
+                        let format = args[i + 1];
+                        config.enable_thinking = Some(format == "deepseek");
+                        i += 1;
+                    }
+                }
                 _ => {
                     // Collect unknown arguments
                     if arg.starts_with('-') {
@@ -444,14 +599,36 @@ fn parse_gguf_file(path: &std::path::Path) -> Option<ModelInfo> {
 
     let quantization = extract_quantization(&filename);
 
+    let name = extract_model_name_from_path(path, &filename);
+
     Some(ModelInfo {
         path: path.to_string_lossy().to_string(),
-        name: filename.clone(),
+        name,
         size_gb: (size_gb * 100.0).round() / 100.0,
         quantization,
         model_type: ModelType::TextOnly,
         is_moe: filename.to_lowercase().contains("moe"),
     })
+}
+
+fn extract_model_name_from_path(path: &std::path::Path, filename: &str) -> String {
+    let mut current = path;
+    for _ in 0..4 {
+        if let Some(parent) = current.parent() {
+            if let Some(dir_name) = parent.file_name() {
+                let dir_name = dir_name.to_string_lossy();
+                if dir_name.starts_with("models--") {
+                    let repo_id = dir_name.strip_prefix("models--").unwrap_or(&dir_name);
+                    return format!("{} ({})", repo_id.replace("--", "/"), filename);
+                }
+            }
+            current = parent;
+        } else {
+            break;
+        }
+    }
+
+    filename.to_string()
 }
 
 fn extract_quantization(filename: &str) -> String {

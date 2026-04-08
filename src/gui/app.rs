@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 use eframe::egui;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -55,6 +56,7 @@ pub struct App {
     started_hf_model: Option<String>,
     cached_stats: Option<(u32, MonitorStats)>,
     previous_server_status: crate::models::ServerStatus,
+    needs_repaint: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -76,9 +78,21 @@ impl App {
             if available_providers.is_empty() {
                 "llama.cpp".to_string()
             } else {
-                available_providers[0].0.to_string()
+                // First check if saved provider is still available
+                let saved_provider = &settings.selected_provider;
+                if !saved_provider.is_empty()
+                    && available_providers
+                        .iter()
+                        .any(|(id, _)| *id == saved_provider)
+                {
+                    saved_provider.clone()
+                } else {
+                    available_providers[0].0.to_string()
+                }
             }
         });
+
+        log::info!("Selected provider for startup: {}", selected_provider);
 
         let (models, server_config) = Self::build_for_provider(&selected_provider, &settings);
 
@@ -86,9 +100,42 @@ impl App {
             m.path == server_config.model_path || m.path.contains(&server_config.model_path)
         });
 
-        let provider_settings = load_provider_settings_for(&selected_provider);
-
         let provider = Self::get_provider_static(&selected_provider);
+        let provider_defaults = provider.default_settings();
+        let loaded_settings = load_provider_settings_for(&selected_provider);
+        let provider_settings = ProviderSettings {
+            binary_path: if !loaded_settings.binary_path.is_empty() {
+                loaded_settings.binary_path.clone()
+            } else {
+                provider_defaults.binary_path.clone()
+            },
+            env_script: if !loaded_settings.env_script.is_empty() {
+                loaded_settings.env_script.clone()
+            } else {
+                provider_defaults.env_script.clone()
+            },
+            additional_args: if !loaded_settings.additional_args.is_empty() {
+                loaded_settings.additional_args.clone()
+            } else {
+                provider_defaults.additional_args.clone()
+            },
+            health_endpoint: if !loaded_settings.health_endpoint.is_empty() {
+                loaded_settings.health_endpoint.clone()
+            } else {
+                provider_defaults.health_endpoint.clone()
+            },
+            heartbeat_interval_secs: if loaded_settings.heartbeat_interval_secs > 0 {
+                loaded_settings.heartbeat_interval_secs
+            } else {
+                provider_defaults.heartbeat_interval_secs
+            },
+            venv_path: if !loaded_settings.venv_path.is_empty() {
+                loaded_settings.venv_path.clone()
+            } else {
+                provider_defaults.venv_path.clone()
+            },
+        };
+
         let mut server_controller = ServerController::new();
         server_controller.set_provider(provider.clone());
         server_controller.set_provider_settings(provider_settings.clone());
@@ -130,6 +177,7 @@ impl App {
             started_hf_model: None,
             cached_stats: None,
             previous_server_status: crate::models::ServerStatus::Stopped,
+            needs_repaint: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -174,6 +222,27 @@ impl App {
                 if detected_config.threads != 8 {
                     server_config.threads = detected_config.threads;
                 }
+                if detected_config.temperature.is_some() {
+                    server_config.temperature = detected_config.temperature;
+                }
+                if detected_config.top_k.is_some() {
+                    server_config.top_k = detected_config.top_k;
+                }
+                if detected_config.top_p.is_some() {
+                    server_config.top_p = detected_config.top_p;
+                }
+                if detected_config.min_p.is_some() {
+                    server_config.min_p = detected_config.min_p;
+                }
+                if detected_config.presence_penalty.is_some() {
+                    server_config.presence_penalty = detected_config.presence_penalty;
+                }
+                if detected_config.repetition_penalty.is_some() {
+                    server_config.repetition_penalty = detected_config.repetition_penalty;
+                }
+                if detected_config.enable_thinking.is_some() {
+                    server_config.enable_thinking = detected_config.enable_thinking;
+                }
 
                 break;
             }
@@ -217,13 +286,16 @@ impl App {
     fn switch_provider(&mut self, new_provider_id: &str) {
         if let Some(old_i) = self.selected_model {
             if let Some(model) = self.models.get(old_i) {
-                save_model_config(&model.path, &self.server_config).ok();
+                save_model_config(&model.path, &self.server_config, new_provider_id).ok();
             }
         }
 
         self.selected_provider = new_provider_id.to_string();
         self.settings.selected_provider = new_provider_id.to_string();
         self.save_settings();
+
+        // Invalidate provider install cache when switching providers
+        self.provider_installed_cache = None;
 
         let (models, server_config) = Self::build_for_provider(new_provider_id, &self.settings);
         self.models = models;
@@ -233,6 +305,41 @@ impl App {
         self.provider_settings = load_provider_settings_for(new_provider_id);
 
         let provider = self.get_current_provider();
+        let provider_defaults = provider.default_settings();
+        let loaded = self.provider_settings.clone();
+        self.provider_settings = ProviderSettings {
+            binary_path: if !loaded.binary_path.is_empty() {
+                loaded.binary_path.clone()
+            } else {
+                provider_defaults.binary_path.clone()
+            },
+            env_script: if !loaded.env_script.is_empty() {
+                loaded.env_script.clone()
+            } else {
+                provider_defaults.env_script.clone()
+            },
+            additional_args: if !loaded.additional_args.is_empty() {
+                loaded.additional_args.clone()
+            } else {
+                provider_defaults.additional_args.clone()
+            },
+            health_endpoint: if !loaded.health_endpoint.is_empty() {
+                loaded.health_endpoint.clone()
+            } else {
+                provider_defaults.health_endpoint.clone()
+            },
+            heartbeat_interval_secs: if loaded.heartbeat_interval_secs > 0 {
+                loaded.heartbeat_interval_secs
+            } else {
+                provider_defaults.heartbeat_interval_secs
+            },
+            venv_path: if !loaded.venv_path.is_empty() {
+                loaded.venv_path.clone()
+            } else {
+                provider_defaults.venv_path.clone()
+            },
+        };
+
         self.server_controller = ServerController::new();
         self.log_buffer = self.server_controller.get_log_buffer();
         self.server_controller.set_provider(provider);
@@ -270,50 +377,37 @@ impl App {
         if self.bottom_view == BottomView::Log {
             let entries = self.log_buffer.get_entries();
             ui.push_id("log_panel", |ui| {
+                let mut log_text = String::new();
+                for entry in &entries {
+                    let time_str = entry
+                        .timestamp
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| {
+                            let secs = d.as_secs();
+                            let h = secs / 3600;
+                            let m = (secs % 3600) / 60;
+                            let s = secs % 60;
+                            format!("{:02}:{:02}:{:02}", h, m, s)
+                        })
+                        .unwrap_or_default();
+
+                    log_text.push_str(&format!(
+                        "{} [{}] {}\n",
+                        time_str,
+                        entry.level.as_str(),
+                        entry.message
+                    ));
+                }
+
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        if entries.is_empty() {
-                            ui.label(
-                                egui::RichText::new(
-                                    "No logs yet. Start a server to see output here.",
-                                )
-                                .color(egui::Color32::GRAY)
-                                .italics(),
-                            );
-                        } else {
-                            for entry in &entries {
-                                let time_str = entry
-                                    .timestamp
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| {
-                                        let secs = d.as_secs();
-                                        let h = secs / 3600;
-                                        let m = (secs % 3600) / 60;
-                                        let s = secs % 60;
-                                        format!("{:02}:{:02}:{:02}", h, m, s)
-                                    })
-                                    .unwrap_or_default();
-
-                                let color = match entry.level {
-                                    LogLevel::Error => egui::Color32::RED,
-                                    LogLevel::Warn => egui::Color32::YELLOW,
-                                    LogLevel::Info => egui::Color32::LIGHT_GRAY,
-                                };
-
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} [{}] {}",
-                                        time_str,
-                                        entry.level.as_str(),
-                                        entry.message
-                                    ))
-                                    .color(color)
-                                    .monospace(),
-                                );
-                            }
-                        }
+                        egui::TextEdit::multiline(&mut log_text)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(entries.len().max(10))
+                            .frame(false)
+                            .show(ui);
                     });
             });
         }
@@ -351,10 +445,15 @@ impl App {
 
                 ui.separator();
 
+                let provider_supports_gguf = self.get_current_provider().supports_gguf();
                 let filtered: Vec<_> = self
                     .models
                     .iter()
                     .filter(|m| {
+                        let is_gguf = m.path.to_lowercase().ends_with(".gguf");
+                        if is_gguf && !provider_supports_gguf {
+                            return false;
+                        }
                         self.search_query.is_empty()
                             || m.name
                                 .to_lowercase()
@@ -446,18 +545,26 @@ impl App {
                             if response.clicked() {
                                 if let Some(old_i) = self.selected_model {
                                     if let Some(old_model) = filtered.get(old_i) {
-                                        save_model_config(&old_model.path, &self.server_config)
-                                            .ok();
+                                        save_model_config(
+                                            &old_model.path,
+                                            &self.server_config,
+                                            &self.selected_provider,
+                                        )
+                                        .ok();
                                     }
                                 }
 
                                 self.selected_model = Some(i);
                                 self.server_config.model_path = model.path.clone();
 
-                                if let Some(config) = load_model_config(&model.path) {
+                                if let Some(config) =
+                                    load_model_config(&model.path, &self.selected_provider)
+                                {
                                     self.server_config = config;
                                     self.server_config.model_path = model.path.clone();
-                                } else if let Some(fallback) = get_fallback_config() {
+                                } else if let Some(fallback) =
+                                    get_fallback_config(&self.selected_provider)
+                                {
                                     self.server_config.context_size = fallback.context_size;
                                     self.server_config.batch_size = fallback.batch_size;
                                     self.server_config.gpu_layers = fallback.gpu_layers;
@@ -469,6 +576,7 @@ impl App {
                                     self.server_config.num_prompt_tracking =
                                         fallback.num_prompt_tracking;
                                     self.server_config.additional_args = fallback.additional_args;
+                                    self.server_config.tokenizer = fallback.tokenizer;
                                 }
 
                                 if self.selected_provider == "llama.cpp" {
@@ -509,6 +617,27 @@ impl App {
                                         Some(&self.gpus),
                                         &mut self.server_config,
                                     );
+                                    let is_gguf = model.path.to_lowercase().contains("gguf");
+                                    self.log_buffer.push_info(format!(
+                                        "[vLLM GGUF] Checking model path: {} (looks like GGUF: {})",
+                                        model.path, is_gguf
+                                    ));
+                                    if is_gguf {
+                                        if let Some((hf_id, tokenizer, logs)) =
+                                            crate::providers::vllm::get_gguf_tokenizer_info(
+                                                &model.path,
+                                            )
+                                        {
+                                            for log_msg in &logs {
+                                                self.log_buffer.push_info(log_msg.clone());
+                                            }
+                                            self.server_config.huggingface_id = hf_id;
+                                            self.server_config.tokenizer = tokenizer;
+                                        } else {
+                                            self.log_buffer
+                                                .push_warn("Could not auto-detect HuggingFace ID or tokenizer for GGUF model".to_string());
+                                        }
+                                    }
                                 }
                             }
 
@@ -543,11 +672,46 @@ impl App {
                 }
 
                 if ui.button("⚙️ Provider Settings").clicked() {
-                    self.provider_settings = self.server_controller.get_provider_settings();
+                    let provider = self.get_current_provider();
+                    let defaults = provider.default_settings();
+                    let current = self.server_controller.get_provider_settings();
+                    self.provider_settings = ProviderSettings {
+                        binary_path: if !current.binary_path.is_empty() {
+                            current.binary_path.clone()
+                        } else {
+                            defaults.binary_path
+                        },
+                        env_script: if !current.env_script.is_empty() {
+                            current.env_script.clone()
+                        } else {
+                            defaults.env_script
+                        },
+                        additional_args: if !current.additional_args.is_empty() {
+                            current.additional_args.clone()
+                        } else {
+                            defaults.additional_args
+                        },
+                        health_endpoint: if !current.health_endpoint.is_empty() {
+                            current.health_endpoint.clone()
+                        } else {
+                            defaults.health_endpoint
+                        },
+                        heartbeat_interval_secs: if current.heartbeat_interval_secs > 0 {
+                            current.heartbeat_interval_secs
+                        } else {
+                            defaults.heartbeat_interval_secs
+                        },
+                        venv_path: if !current.venv_path.is_empty() {
+                            current.venv_path.clone()
+                        } else {
+                            defaults.venv_path
+                        },
+                    };
                     self.show_provider_settings = true;
                 }
 
                 if ui.button("Setup").clicked() {
+                    self.provider_installed_cache = None;
                     self.show_provider_setup = true;
                     self.provider_setup_provider = self.selected_provider.clone();
                 }
@@ -562,6 +726,10 @@ impl App {
 
                 ui.label("HuggingFace ID:");
                 ui.text_edit_singleline(&mut self.server_config.huggingface_id);
+                ui.end_row();
+
+                ui.label("Tokenizer:");
+                ui.text_edit_singleline(&mut self.server_config.tokenizer);
                 ui.end_row();
 
                 ui.label("Context Size:");
@@ -771,18 +939,110 @@ impl App {
                 ui.add(egui::DragValue::new(&mut self.server_config.port).clamp_range(1..=65535));
                 ui.end_row();
 
+                ui.label("Temperature:");
+                let mut temp_val = self.server_config.temperature.unwrap_or(0.7);
+                ui.add(
+                    egui::DragValue::new(&mut temp_val)
+                        .speed(0.1)
+                        .clamp_range(0.0..=2.0),
+                )
+                .on_hover_text("Sampling temperature (0.0-2.0)");
+                if temp_val != self.server_config.temperature.unwrap_or(0.7) {
+                    self.server_config.temperature = Some(temp_val);
+                } else if self.server_config.temperature.is_none() {
+                    self.server_config.temperature = Some(0.7);
+                }
+                ui.end_row();
+
+                ui.label("Top-K:");
+                let mut top_k_val = self.server_config.top_k.unwrap_or(40);
+                ui.add(
+                    egui::DragValue::new(&mut top_k_val)
+                        .speed(1.0)
+                        .clamp_range(0..=100),
+                )
+                .on_hover_text("Top-K sampling (0-100)");
+                if top_k_val != self.server_config.top_k.unwrap_or(40) {
+                    self.server_config.top_k = Some(top_k_val);
+                } else if self.server_config.top_k.is_none() {
+                    self.server_config.top_k = Some(40);
+                }
+                ui.end_row();
+
+                ui.label("Top-P:");
+                let mut top_p_val = self.server_config.top_p.unwrap_or(0.95);
+                ui.add(
+                    egui::DragValue::new(&mut top_p_val)
+                        .speed(0.01)
+                        .clamp_range(0.0..=1.0),
+                )
+                .on_hover_text("Top-P (nucleus) sampling (0.0-1.0)");
+                if top_p_val != self.server_config.top_p.unwrap_or(0.95) {
+                    self.server_config.top_p = Some(top_p_val);
+                } else if self.server_config.top_p.is_none() {
+                    self.server_config.top_p = Some(0.95);
+                }
+                ui.end_row();
+
+                ui.label("Min-P:");
+                let mut min_p_val = self.server_config.min_p.unwrap_or(0.05);
+                ui.add(
+                    egui::DragValue::new(&mut min_p_val)
+                        .speed(0.01)
+                        .clamp_range(0.0..=1.0),
+                )
+                .on_hover_text("Min-P sampling (0.0-1.0)");
+                if min_p_val != self.server_config.min_p.unwrap_or(0.05) {
+                    self.server_config.min_p = Some(min_p_val);
+                } else if self.server_config.min_p.is_none() {
+                    self.server_config.min_p = Some(0.05);
+                }
+                ui.end_row();
+
+                ui.label("Presence Penalty:");
+                let mut presence_penalty_val = self.server_config.presence_penalty.unwrap_or(0.0);
+                ui.add(
+                    egui::DragValue::new(&mut presence_penalty_val)
+                        .speed(0.1)
+                        .clamp_range(-2.0..=2.0),
+                )
+                .on_hover_text("Presence penalty (-2.0-2.0)");
+                if presence_penalty_val != self.server_config.presence_penalty.unwrap_or(0.0) {
+                    self.server_config.presence_penalty = Some(presence_penalty_val);
+                } else if self.server_config.presence_penalty.is_none() {
+                    self.server_config.presence_penalty = Some(0.0);
+                }
+                ui.end_row();
+
+                ui.label("Repetition Penalty:");
+                let mut repetition_penalty_val =
+                    self.server_config.repetition_penalty.unwrap_or(1.1);
+                ui.add(
+                    egui::DragValue::new(&mut repetition_penalty_val)
+                        .speed(0.1)
+                        .clamp_range(0.0..=5.0),
+                )
+                .on_hover_text("Repetition penalty (0.0-5.0)");
+                if repetition_penalty_val != self.server_config.repetition_penalty.unwrap_or(1.1) {
+                    self.server_config.repetition_penalty = Some(repetition_penalty_val);
+                } else if self.server_config.repetition_penalty.is_none() {
+                    self.server_config.repetition_penalty = Some(1.1);
+                }
+                ui.end_row();
+
+                ui.label("Enable Thinking:");
+                ui.horizontal(|ui| {
+                    let mut enabled = self.server_config.enable_thinking.unwrap_or(false);
+                    if ui.checkbox(&mut enabled, "").changed() {
+                        self.server_config.enable_thinking = Some(enabled);
+                    }
+                    ui.label("Enable thinking/deepseek reasoning");
+                });
+                ui.end_row();
+
                 ui.label("Additional Args:");
                 ui.text_edit_singleline(&mut self.server_config.additional_args);
                 ui.end_row();
-            });
-
-            ui.separator();
-
-            ui.horizontal(|ui| {
-                if ui.button("Example").clicked() {
-                    self.show_cmdline_dialog = true;
-                    self.cmdline_input = String::new();
-                }
             });
 
             ui.separator();
@@ -800,7 +1060,12 @@ impl App {
                                 } else {
                                     self.server_config.model_path.clone()
                                 };
-                                save_model_config(&key, &self.server_config).ok();
+                                save_model_config(
+                                    &key,
+                                    &self.server_config,
+                                    &self.selected_provider,
+                                )
+                                .ok();
                             }
                             self.server_controller.stop().ok();
                             self.started_hf_model = None;
@@ -817,7 +1082,12 @@ impl App {
                                 } else {
                                     self.server_config.model_path.clone()
                                 };
-                                save_model_config(&key, &self.server_config).ok();
+                                save_model_config(
+                                    &key,
+                                    &self.server_config,
+                                    &self.selected_provider,
+                                )
+                                .ok();
                             }
                             let provider = self.get_current_provider();
                             self.server_controller
@@ -830,6 +1100,26 @@ impl App {
                         }
                     }
                 }
+
+                if ui.button("Recommended").clicked() {
+                    let model_path = &self.server_config.model_path;
+                    let quantization = if let Some(idx) = self.selected_model {
+                        if let Some(model) = self.models.get(idx) {
+                            &model.quantization
+                        } else {
+                            "q4_0"
+                        }
+                    } else {
+                        "q4_0"
+                    };
+                    let params = crate::services::get_recommended_params(model_path, quantization);
+                    crate::services::apply_recommended_params(&mut self.server_config, &params);
+                }
+
+                if ui.button("Example").clicked() {
+                    self.show_cmdline_dialog = true;
+                    self.cmdline_input = String::new();
+                }
             });
         });
     }
@@ -837,6 +1127,16 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check if we need to repaint (e.g., server status changed)
+        if self
+            .needs_repaint
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            ctx.request_repaint();
+            self.needs_repaint
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+
         // Throttle expensive operations
         if self.frame_counter % 60 == 0 {
             self.server_controller.refresh_external_detection();
@@ -1057,7 +1357,7 @@ impl eframe::App for App {
                     }
                 }
 
-                self.previous_server_status = current_status;
+                self.previous_server_status = current_status.clone();
             });
         });
 
@@ -1124,6 +1424,8 @@ impl eframe::App for App {
                     if ui.button("Save").clicked() {
                         self.server_controller.set_provider_settings(self.provider_settings.clone());
                         save_provider_settings_for(&self.selected_provider, &self.provider_settings).ok();
+                        // Invalidate cache so setup dialog checks with new settings
+                        self.provider_installed_cache = None;
                     }
                 });
         }
@@ -1694,14 +1996,36 @@ impl eframe::App for App {
                 if parsed.num_prompt_tracking != 1 {
                     self.server_config.num_prompt_tracking = parsed.num_prompt_tracking;
                 }
+                if parsed.temperature.is_some() {
+                    self.server_config.temperature = parsed.temperature;
+                }
+                if parsed.top_k.is_some() {
+                    self.server_config.top_k = parsed.top_k;
+                }
+                if parsed.top_p.is_some() {
+                    self.server_config.top_p = parsed.top_p;
+                }
+                if parsed.min_p.is_some() {
+                    self.server_config.min_p = parsed.min_p;
+                }
+                if parsed.presence_penalty.is_some() {
+                    self.server_config.presence_penalty = parsed.presence_penalty;
+                }
+                if parsed.repetition_penalty.is_some() {
+                    self.server_config.repetition_penalty = parsed.repetition_penalty;
+                }
+                if parsed.enable_thinking.is_some() {
+                    self.server_config.enable_thinking = parsed.enable_thinking;
+                }
                 if !parsed.additional_args.is_empty() {
                     self.server_config.additional_args = parsed.additional_args;
+                }
+                if !parsed.tokenizer.is_empty() {
+                    self.server_config.tokenizer = parsed.tokenizer;
                 }
                 self.show_cmdline_dialog = false;
             }
         }
-
-        ctx.request_repaint();
     }
 }
 
