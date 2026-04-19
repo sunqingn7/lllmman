@@ -26,6 +26,62 @@ impl Default for LlamaCppProvider {
     }
 }
 
+/// Find the corresponding mmproj file for a given model path.
+/// Returns the mmproj path if found, None otherwise.
+///
+/// mmproj files are typically named like "mmproj-BF16.gguf", "mmproj-f16.gguf", etc.
+/// and are located in the same directory as the main model.
+pub fn find_mmproj_for_model(model_path: &str) -> Option<String> {
+    let path = std::path::Path::new(model_path);
+    let parent = path.parent()?;
+    let model_file_name = path.file_name()?.to_string_lossy();
+
+    // Check if model file name suggests it's a vision/multimodal model
+    let model_stem = model_file_name
+        .rsplitn(2, '.')
+        .nth(1)
+        .unwrap_or(&model_file_name);
+
+    // Try to find mmproj file in the same directory
+    if let Ok(entries) = std::fs::read_dir(parent) {
+        let mut best_match: Option<String> = None;
+
+        for entry in entries.flatten() {
+            let entry_path = entry.path();
+            if let Some(ext) = entry_path.extension() {
+                if ext.to_string_lossy().to_lowercase() == "gguf" {
+                    if let Some(file_name) = entry_path.file_name() {
+                        let name_lower = file_name.to_string_lossy().to_lowercase();
+
+                        // Check if it's an mmproj file
+                        if name_lower.starts_with("mmproj") {
+                            let mmproj_path = entry_path.to_string_lossy().to_string();
+
+                            // Try to match model type hint in the filename
+                            // e.g., if model has "qwen" in name, prefer mmproj with "qwen" in name
+                            let model_lower = model_stem.to_lowercase();
+                            if name_lower.contains(&model_lower)
+                                || name_lower.contains("vision")
+                                || name_lower.contains("mm")
+                            {
+                                // Prefer this match
+                                best_match = Some(mmproj_path);
+                            } else if best_match.is_none() {
+                                // Use as fallback
+                                best_match = Some(mmproj_path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return best_match;
+    }
+
+    None
+}
+
 impl LlmProvider for LlamaCppProvider {
     fn name(&self) -> &'static str {
         self.name
@@ -203,13 +259,18 @@ impl LlmProvider for LlamaCppProvider {
             if let Some(repeat_pen) = config.repetition_penalty {
                 cmd.push_str(&format!(" --repeat-penalty {}", repeat_pen));
             }
-            if let Some(enable_thinking) = config.enable_thinking {
-                if enable_thinking {
-                    cmd.push_str(" --reasoning-format deepseek");
-                }
+        if let Some(enable_thinking) = config.enable_thinking {
+            if enable_thinking {
+                cmd.push_str(" --reasoning-format deepseek");
             }
+        }
 
-            for arg in config.additional_args.split_whitespace() {
+        // Add mmproj flag for multimodal models
+        if !config.mmproj_path.is_empty() {
+            cmd.push_str(&format!(" --mmproj \"{}\"", config.mmproj_path));
+        }
+
+        for arg in config.additional_args.split_whitespace() {
                 if !arg.is_empty() {
                     cmd.push_str(&format!(" {}", arg));
                 }
@@ -248,11 +309,16 @@ impl LlmProvider for LlamaCppProvider {
             if !config.cache_type_k.is_empty() {
                 inner.push_str(&format!("--cache-type-k \"{}\" ", config.cache_type_k));
             }
-            if !config.cache_type_v.is_empty() {
-                inner.push_str(&format!("--cache-type-v \"{}\" ", config.cache_type_v));
-            }
+        if !config.cache_type_v.is_empty() {
+            inner.push_str(&format!("--cache-type-v \"{}\" ", config.cache_type_v));
+        }
 
-            for arg in config.additional_args.split_whitespace() {
+        // Add mmproj flag for multimodal models
+        if !config.mmproj_path.is_empty() {
+            inner.push_str(&format!("--mmproj \"{}\" ", config.mmproj_path));
+        }
+
+        for arg in config.additional_args.split_whitespace() {
                 if !arg.is_empty() {
                     inner.push_str(&format!("{} ", arg));
                 }
@@ -278,22 +344,29 @@ impl LlmProvider for LlamaCppProvider {
             return models;
         }
 
-        fn scan_recursive(dir: &std::path::Path, models: &mut Vec<ModelInfo>) {
-            if let Ok(entries) = std::fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        scan_recursive(&path, models);
-                    } else if let Some(ext) = path.extension() {
-                        if ext.to_string_lossy().to_lowercase() == "gguf" {
-                            if let Some(model) = parse_gguf_file(&path) {
-                                models.push(model);
-                            }
+fn scan_recursive(dir: &std::path::Path, models: &mut Vec<ModelInfo>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan_recursive(&path, models);
+            } else if let Some(ext) = path.extension() {
+                if ext.to_string_lossy().to_lowercase() == "gguf" {
+                    // Skip mmproj files - they are vision adapters, not standalone models
+                    if let Some(file_name) = path.file_name() {
+                        let name_lower = file_name.to_string_lossy().to_lowercase();
+                        if name_lower.starts_with("mmproj") {
+                            continue;
                         }
+                    }
+                    if let Some(model) = parse_gguf_file(&path) {
+                        models.push(model);
                     }
                 }
             }
         }
+    }
+}
 
         scan_recursive(path_obj, &mut models);
         models
@@ -507,13 +580,19 @@ impl LlmProvider for LlamaCppProvider {
                         i += 1;
                     }
                 }
-                "--cache-type-v" => {
-                    if i + 1 < args.len() {
-                        config.cache_type_v = args[i + 1].to_string();
-                        i += 1;
-                    }
-                }
-                "--temperature" => {
+        "--cache-type-v" => {
+            if i + 1 < args.len() {
+                config.cache_type_v = args[i + 1].to_string();
+                i += 1;
+            }
+        }
+        "--mmproj" => {
+            if i + 1 < args.len() {
+                config.mmproj_path = args[i + 1].to_string();
+                i += 1;
+            }
+        }
+        "--temperature" => {
                     if i + 1 < args.len() {
                         if let Ok(val) = args[i + 1].parse::<f32>() {
                             config.temperature = Some(val);
@@ -619,7 +698,7 @@ fn extract_model_name_from_path(path: &std::path::Path, filename: &str) -> Strin
                 let dir_name = dir_name.to_string_lossy();
                 if dir_name.starts_with("models--") {
                     let repo_id = dir_name.strip_prefix("models--").unwrap_or(&dir_name);
-                    return format!("{} ({})", repo_id.replace("--", "/"), filename);
+                    return repo_id.replace("--", "/").to_string();
                 }
             }
             current = parent;
@@ -628,7 +707,12 @@ fn extract_model_name_from_path(path: &std::path::Path, filename: &str) -> Strin
         }
     }
 
-    filename.to_string()
+    // Fallback: use filename without extension
+    if let Some(stem) = filename.rsplitn(2, '.').nth(1) {
+        stem.to_string()
+    } else {
+        filename.to_string()
+    }
 }
 
 fn extract_quantization(filename: &str) -> String {

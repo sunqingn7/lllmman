@@ -236,7 +236,11 @@ impl ServerController {
     }
 
     pub fn get_status(&mut self) -> ServerStatus {
-        let stored_status = self.status.lock().unwrap().clone();
+        // Clone status first to release lock quickly
+        let stored_status = {
+            let guard = self.status.lock().unwrap();
+            guard.clone()
+        };
 
         if matches!(stored_status, ServerStatus::Running) {
             if !self.is_running() {
@@ -286,5 +290,9 @@ impl ServerController {
 
     pub fn has_external_server(&self) -> bool {
         self.external_pid.is_some() && self.is_external_running()
+    }
+
+    pub fn get_log_buffer_ref(&self) -> &LogBuffer {
+        &self.log_buffer
     }
 }

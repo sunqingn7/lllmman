@@ -51,10 +51,11 @@ impl LogBuffer {
             message,
         };
         let mut entries = self.entries.lock().unwrap();
-        entries.push(entry);
-        if entries.len() > MAX_LOG_ENTRIES {
+        // Remove oldest entries if at capacity before adding new one
+        while entries.len() >= MAX_LOG_ENTRIES {
             entries.remove(0);
         }
+        entries.push(entry);
     }
 
     pub fn push_info(&self, message: String) {

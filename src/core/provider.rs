@@ -140,6 +140,7 @@ pub struct ProviderConfig {
     pub gpu_layers: i32,
     pub threads: u32,
     pub host: String,
+    pub quantization: String,
     pub port: u16,
     pub additional_args: String,
     pub parsed_options: HashMap<String, String>,
@@ -167,6 +168,8 @@ pub struct ProviderConfig {
     pub enable_thinking: Option<bool>,
     #[serde(default)]
     pub tokenizer: String,
+    #[serde(default)]
+    pub mmproj_path: String,
 }
 
 impl Default for ProviderConfig {
@@ -179,6 +182,7 @@ impl Default for ProviderConfig {
             gpu_layers: -1,
             threads: 8,
             host: "0.0.0.0".to_string(),
+            quantization: "q4_0".to_string(),
             port: 8080,
             additional_args: String::new(),
             parsed_options: HashMap::new(),
@@ -196,6 +200,7 @@ impl Default for ProviderConfig {
             repetition_penalty: None,
             enable_thinking: None,
             tokenizer: String::new(),
+            mmproj_path: String::new(),
         }
     }
 }

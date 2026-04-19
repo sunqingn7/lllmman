@@ -32,14 +32,14 @@ pub fn parse_command_line(cmd_line: &str) -> ProviderConfig {
                     i += 1;
                 }
             }
-            "--n-gpu-layers" | "-ngl" => {
-                if i + 1 < args.len() {
-                    if let Ok(val) = args[i + 1].parse() {
-                        config.gpu_layers = val;
-                    }
-                    i += 1;
+        "--n-gpu-layers" | "-ngl" => {
+            if i + 1 < args.len() {
+                if let Ok(val) = args[i + 1].parse::<i32>() {
+                    config.gpu_layers = val;
                 }
+                i += 1;
             }
+        }
             "--threads" | "-t" => {
                 if i + 1 < args.len() {
                     if let Ok(val) = args[i + 1].parse() {
@@ -82,16 +82,25 @@ pub fn parse_command_line(cmd_line: &str) -> ProviderConfig {
                     i += 1;
                 }
             }
-            // For SGLang
-            "--mem-fraction-static" => {
-                if i + 1 < args.len() {
-                    if let Ok(val) = args[i + 1].parse::<f32>() {
-                        config.gpu_layers = (val * 100.0) as i32;
-                    }
-                    i += 1;
+        // For SGLang
+        "--mem-fraction-static" => {
+            if i + 1 < args.len() {
+                if let Ok(val) = args[i + 1].parse::<f32>() {
+                    config.gpu_layers = (val * 100.0) as i32;
                 }
+                i += 1;
             }
-            "--context-length" => {
+        }
+        // For vLLM
+        "--gpu-memory-utilization" => {
+            if i + 1 < args.len() {
+                if let Ok(val) = args[i + 1].parse::<f32>() {
+                    config.gpu_layers = (val * 100.0) as i32;
+                }
+                i += 1;
+            }
+        }
+        "--context-length" => {
                 if i + 1 < args.len() {
                     if let Ok(val) = args[i + 1].parse() {
                         config.context_size = val;

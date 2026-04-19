@@ -91,19 +91,20 @@ pub fn save_model_config(
         .unwrap_or_default();
     additional_args.insert(provider_id.to_string(), config.additional_args.clone());
 
-    configs.configs.insert(
-        key,
-        ModelConfigEntry {
-            huggingface_id: config.huggingface_id.clone(),
-            context_size: config.context_size,
-            batch_size: config.batch_size,
-            gpu_layers: config.gpu_layers,
-            threads: config.threads,
-            port: config.port,
-            host: config.host.clone(),
-            cache_type_k: config.cache_type_k.clone(),
-            cache_type_v: config.cache_type_v.clone(),
-            num_prompt_tracking: config.num_prompt_tracking,
+            configs.configs.insert(
+                key,
+                ModelConfigEntry {
+                    huggingface_id: config.huggingface_id.clone(),
+                    context_size: config.context_size,
+                    batch_size: config.batch_size,
+                    gpu_layers: config.gpu_layers,
+                    threads: config.threads,
+                    port: config.port,
+                    host: config.host.clone(),
+                    quantization: config.quantization.clone(),
+                    cache_type_k: config.cache_type_k.clone(),
+                    cache_type_v: config.cache_type_v.clone(),
+                    num_prompt_tracking: config.num_prompt_tracking,
             additional_args: additional_args,
             gpu_allocation: config.gpu_allocation.clone(),
             temperature: config.temperature,
@@ -114,8 +115,9 @@ pub fn save_model_config(
             repetition_penalty: config.repetition_penalty,
             enable_thinking: config.enable_thinking,
             tokenizer: config.tokenizer.clone(),
+            mmproj_path: config.mmproj_path.clone(),
         },
-    );
+            );
 
     if !config.huggingface_id.is_empty() {
         configs.last_model_path = Some(config.huggingface_id.clone());
@@ -148,12 +150,14 @@ pub fn load_model_config(model_path: &str, provider_id: &str) -> Option<Provider
             threads: entry.threads,
             port: entry.port,
             host: entry.host.clone(),
+            quantization: entry.quantization.clone(),
             cache_type_k: entry.cache_type_k.clone(),
             cache_type_v: entry.cache_type_v.clone(),
             num_prompt_tracking: entry.num_prompt_tracking,
             additional_args: additional_args,
             gpu_allocation: entry.gpu_allocation.clone(),
             tokenizer: entry.tokenizer.clone(),
+            mmproj_path: entry.mmproj_path.clone(),
             ..Default::default()
         });
     }
@@ -179,23 +183,24 @@ pub fn get_fallback_config(provider_id: &str) -> Option<ProviderConfig> {
                 },
                 huggingface_id: entry.huggingface_id.clone(),
                 context_size: entry.context_size,
-                batch_size: entry.batch_size,
-                gpu_layers: entry.gpu_layers,
-                threads: entry.threads,
-                port: entry.port,
-                host: entry.host.clone(),
-                cache_type_k: entry.cache_type_k.clone(),
-                cache_type_v: entry.cache_type_v.clone(),
-                num_prompt_tracking: entry.num_prompt_tracking,
-                additional_args: additional_args,
-                gpu_allocation: entry.gpu_allocation.clone(),
-                tokenizer: entry.tokenizer.clone(),
-                ..Default::default()
-            });
-        }
+            batch_size: entry.batch_size,
+            gpu_layers: entry.gpu_layers,
+            threads: entry.threads,
+            port: entry.port,
+            host: entry.host.clone(),
+            cache_type_k: entry.cache_type_k.clone(),
+            cache_type_v: entry.cache_type_v.clone(),
+            num_prompt_tracking: entry.num_prompt_tracking,
+            additional_args: additional_args,
+            gpu_allocation: entry.gpu_allocation.clone(),
+            tokenizer: entry.tokenizer.clone(),
+            mmproj_path: entry.mmproj_path.clone(),
+            ..Default::default()
+        });
     }
+}
 
-    None
+None
 }
 
 pub fn load_provider_settings() -> HashMap<String, ProviderSettings> {

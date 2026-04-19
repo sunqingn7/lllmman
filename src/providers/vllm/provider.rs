@@ -457,14 +457,14 @@ impl LlmProvider for VllmProvider {
                         i += 1;
                     }
                 }
-                "--gpu-memory-utilization" => {
-                    if i + 1 < args.len() {
-                        if let Ok(val) = args[i + 1].parse::<f32>() {
-                            config.gpu_layers = (val * 100.0) as i32;
-                        }
-                        i += 1;
-                    }
+        "--gpu-memory-utilization" | "-gmu" => {
+            if i + 1 < args.len() {
+                if let Ok(val) = args[i + 1].parse::<f32>() {
+                    config.gpu_layers = (val * 100.0) as i32;
                 }
+                i += 1;
+            }
+        }
                 "--max-num-seqs" => {
                     if i + 1 < args.len() {
                         if let Ok(val) = args[i + 1].parse() {

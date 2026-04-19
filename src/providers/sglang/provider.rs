@@ -8,8 +8,6 @@ use crate::core::{
 };
 use crate::models::ModelType;
 
-use dirs;
-
 pub struct SglangProvider {
     id: &'static str,
     name: &'static str,

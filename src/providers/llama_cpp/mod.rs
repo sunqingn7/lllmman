@@ -1,6 +1,6 @@
 pub mod provider;
 
-pub use provider::{read_gguf_n_layer, LlamaCppProvider};
+pub use provider::{find_mmproj_for_model, read_gguf_n_layer, LlamaCppProvider};
 
 use crate::core::LlmProvider;
 use crate::register_provider;

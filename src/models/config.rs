@@ -94,6 +94,7 @@ pub struct ModelConfigEntry {
     pub threads: u32,
     pub port: u16,
     pub host: String,
+    pub quantization: String,
     pub cache_type_k: String,
     pub cache_type_v: String,
     pub num_prompt_tracking: u32,
@@ -115,6 +116,8 @@ pub struct ModelConfigEntry {
     pub enable_thinking: Option<bool>,
     #[serde(default)]
     pub tokenizer: String,
+    #[serde(default)]
+    pub mmproj_path: String,
 }
 
 impl Default for ModelConfigEntry {
@@ -127,6 +130,7 @@ impl Default for ModelConfigEntry {
             threads: 8,
             port: 8080,
             host: "0.0.0.0".to_string(),
+            quantization: "q4_0".to_string(),
             cache_type_k: "q4_0".to_string(),
             cache_type_v: "q4_0".to_string(),
             num_prompt_tracking: 1,
@@ -140,6 +144,7 @@ impl Default for ModelConfigEntry {
             repetition_penalty: None,
             enable_thinking: None,
             tokenizer: String::new(),
+            mmproj_path: String::new(),
         }
     }
 }

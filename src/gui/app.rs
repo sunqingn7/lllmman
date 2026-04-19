@@ -369,7 +369,7 @@ impl App {
                 self.log_buffer.clear();
             }
 
-            self.frame_counter = self.frame_counter.wrapping_add(1);
+            
         });
 
         ui.separator();
@@ -507,42 +507,67 @@ impl App {
                             let frame_shape = card_frame.paint(response.rect);
                             ui.painter().add(frame_shape);
 
-                            let name_rect = egui::Rect::from_min_size(
-                                response.rect.min + egui::vec2(8.0, 4.0),
-                                egui::vec2(response.rect.width() - 16.0, 20.0),
-                            );
-                            ui.painter().text(
-                                name_rect.min,
-                                egui::Align2::LEFT_TOP,
-                                &model.name,
-                                egui::FontId::new(14.0, egui::FontFamily::Monospace),
-                                text_color,
-                            );
+                            let (creator, model_name) = if let Some(pos) = model.name.rfind('/') {
+                    let (c, n) = model.name.split_at(pos);
+                    (c, &n[1..]) // Skip the '/' character
+                } else {
+                    ("", model.name.as_str())
+                };
 
-                            let detail_text = format!(
-                                "{:.1} GB  •  {}  •  {}",
-                                model.size_gb,
-                                model.quantization,
-                                match model.model_type {
-                                    crate::models::ModelType::TextOnly => "Text",
-                                    crate::models::ModelType::Tooling => "Tool",
-                                    crate::models::ModelType::Vision => "Vision",
-                                    crate::models::ModelType::Multimodal => "Multi",
-                                }
-                            );
-                            let detail_rect = egui::Rect::from_min_size(
-                                response.rect.min + egui::vec2(8.0, 26.0),
-                                egui::vec2(response.rect.width() - 16.0, 16.0),
-                            );
-                            ui.painter().text(
-                                detail_rect.min,
-                                egui::Align2::LEFT_TOP,
-                                &detail_text,
-                                egui::FontId::new(11.0, egui::FontFamily::Proportional),
-                                subtext_color,
-                            );
+                // Creator line (small font)
+                if !creator.is_empty() {
+                    let creator_rect = egui::Rect::from_min_size(
+                        response.rect.min + egui::vec2(8.0, 2.0),
+                        egui::vec2(response.rect.width() - 16.0, 12.0),
+                    );
+                    ui.painter().text(
+                        creator_rect.min,
+                        egui::Align2::LEFT_TOP,
+                        creator,
+                        egui::FontId::new(10.0, egui::FontFamily::Proportional),
+                        subtext_color,
+                    );
+                }
 
-                            if response.clicked() {
+                // Model name line (big bold font)
+                let model_name_rect = egui::Rect::from_min_size(
+                    response.rect.min + egui::vec2(8.0, if creator.is_empty() { 2.0 } else { 14.0 }),
+                    egui::vec2(response.rect.width() - 16.0, 18.0),
+                );
+                ui.painter().text(
+                    model_name_rect.min,
+                    egui::Align2::LEFT_TOP,
+                    model_name,
+                    egui::FontId::new(13.0, egui::FontFamily::Monospace),
+                    text_color,
+                );
+
+                // Details line
+                let detail_text = format!(
+                    "{:.1} GB • {} • {}",
+                    model.size_gb,
+                    model.quantization,
+                    match model.model_type {
+                        crate::models::ModelType::TextOnly => "Text",
+                        crate::models::ModelType::Tooling => "Tool",
+                        crate::models::ModelType::Vision => "Vision",
+                        crate::models::ModelType::Multimodal => "Multi",
+                    }
+                );
+                let detail_y = if creator.is_empty() { 20.0 } else { 32.0 };
+                let detail_rect = egui::Rect::from_min_size(
+                    response.rect.min + egui::vec2(8.0, detail_y),
+                    egui::vec2(response.rect.width() - 16.0, 14.0),
+                );
+                ui.painter().text(
+                    detail_rect.min,
+                    egui::Align2::LEFT_TOP,
+                    &detail_text,
+                    egui::FontId::new(10.0, egui::FontFamily::Proportional),
+                    subtext_color,
+                );
+
+                if response.clicked() {
                                 if let Some(old_i) = self.selected_model {
                                     if let Some(old_model) = filtered.get(old_i) {
                                         save_model_config(
@@ -554,12 +579,27 @@ impl App {
                                     }
                                 }
 
-                                self.selected_model = Some(i);
-                                self.server_config.model_path = model.path.clone();
+                self.selected_model = Some(i);
+                self.server_config.model_path = model.path.clone();
 
-                                if let Some(config) =
-                                    load_model_config(&model.path, &self.selected_provider)
-                                {
+                // Auto-detect mmproj for llama.cpp models
+                if self.selected_provider == "llama.cpp" {
+                    if let Some(mmproj_path) =
+                        crate::providers::llama_cpp::find_mmproj_for_model(&model.path)
+                    {
+                        self.server_config.mmproj_path = mmproj_path;
+                        self.log_buffer.push_info(format!(
+                            "[Auto-detect] Found mmproj: {}",
+                            self.server_config.mmproj_path
+                        ));
+                    } else {
+                        self.server_config.mmproj_path.clear();
+                    }
+                }
+
+                if let Some(config) =
+                    load_model_config(&model.path, &self.selected_provider)
+                {
                                     self.server_config = config;
                                     self.server_config.model_path = model.path.clone();
                                 } else if let Some(fallback) =
@@ -1040,15 +1080,31 @@ impl App {
                 });
                 ui.end_row();
 
-                ui.label("Additional Args:");
-                ui.text_edit_singleline(&mut self.server_config.additional_args);
+            ui.label("Additional Args:");
+            ui.text_edit_singleline(&mut self.server_config.additional_args);
+            ui.end_row();
+
+            // Show mmproj path for multimodal models (only for llama.cpp)
+            if self.selected_provider == "llama.cpp" {
+                ui.label("Vision Model:");
+                ui.horizontal(|ui| {
+                    let mut mmproj_path = self.server_config.mmproj_path.clone();
+                    let text_edit = ui.text_edit_singleline(&mut mmproj_path);
+                    if text_edit.changed() {
+                        self.server_config.mmproj_path = mmproj_path;
+                    }
+                    if !self.server_config.mmproj_path.is_empty() {
+                        ui.label("✓").on_hover_text("Vision support enabled");
+                    }
+                });
                 ui.end_row();
-            });
+            }
+        });
 
-            ui.separator();
+        ui.separator();
 
-            ui.horizontal(|ui| {
-                let status = self.server_controller.get_status();
+        ui.horizontal(|ui| {
+            let status = self.server_controller.get_status();
                 match status {
                     crate::models::ServerStatus::Running => {
                         if ui.button("Stop Server").clicked() {
@@ -1127,19 +1183,22 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check if we need to repaint (e.g., server status changed)
-        if self
-            .needs_repaint
-            .load(std::sync::atomic::Ordering::Relaxed)
-        {
-            ctx.request_repaint();
-            self.needs_repaint
-                .store(false, std::sync::atomic::Ordering::Relaxed);
-        }
+        // Always request repaint to keep UI responsive for background updates (logs, stats, etc.)
+        // This is lightweight - actual expensive work is throttled below
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
 
-        // Throttle expensive operations
+        // Increment frame counter at start of each frame
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+
+        // Throttle expensive operations to every ~1 second (at 60fps)
         if self.frame_counter % 60 == 0 {
             self.server_controller.refresh_external_detection();
+        }
+
+        // Update cached stats every ~0.5 seconds for smooth display
+        if self.frame_counter % 30 == 0 {
+            let new_stats = get_system_stats();
+            self.cached_stats = Some((self.frame_counter, new_stats));
         }
 
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
@@ -1152,144 +1211,156 @@ impl eframe::App for App {
                     self.show_gpu_settings = true;
                 }
                 ui.separator();
-                // Cache system stats for 30 frames (~0.5s at 60fps)
-                let stats = match &self.cached_stats {
-                    Some((last_frame, cached)) if self.frame_counter - last_frame < 30 => {
-                        cached.clone()
-                    }
-                    _ => {
-                        let new_stats = get_system_stats();
-                        self.cached_stats = Some((self.frame_counter, new_stats.clone()));
-                        new_stats
-                    }
-                };
+                // Use cached stats (updated every ~0.5s in update())
+                let stats = self.cached_stats.as_ref().map(|(_, s)| s.clone()).unwrap_or_else(|| {
+                    // Fallback if cache is empty
+                    MonitorStats::default()
+                });
 
-                for gpu_info in &self.gpus {
-                    let index = gpu_info.index as usize;
-                    let (used, total) = if index < stats.gpu_vram_usage.len() {
-                        (stats.gpu_vram_usage[index].1, stats.gpu_vram_usage[index].2)
-                    } else {
-                        (0, 0)
-                    };
-                    let vram_percent = if total > 0 {
-                        (used as f32 / total as f32) * 100.0
-                    } else {
-                        0.0
-                    };
-
-                    let temp = if index < stats.gpu_temperatures.len() {
-                        stats.gpu_temperatures[index].temperature_c.unwrap_or(0.0)
-                    } else {
-                        0.0
-                    };
-
-                    ui.label(
-                        egui::RichText::new(format!(" GPU{}", gpu_info.index))
-                            .color(egui::Color32::WHITE),
+                // System Resources - Single line layout with inline bars
+                // CPU
+                let cpu_color = usage_color(stats.cpu_percent);
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("CPU").strong().size(9.0));
+                    let bar_width = 40.0;
+                    let bar_height = 8.0;
+                    let (response, painter) = ui.allocate_painter(
+                        egui::vec2(bar_width, bar_height),
+                        egui::Sense::hover(),
                     );
-                    ui.label(
-                        egui::RichText::new(format!(" ({})", gpu_info.name))
-                            .color(egui::Color32::GRAY),
-                    );
-                    // VRAM Progress bar
-                    ui.horizontal(|ui| {
-                        let rect = ui.available_rect_before_wrap();
-                        let bar_width = 100.0;
-                        let bar_height = 16.0;
-                        let bar_rect = egui::Rect::from_min_size(
-                            rect.min + egui::vec2(0.0, (rect.height() - bar_height) / 2.0),
-                            egui::vec2(bar_width, bar_height),
-                        );
-                        // Background bar (very light)
-                        ui.painter().rect_filled(
-                            bar_rect.shrink(1.0),
+                    let bar_rect = response.rect;
+                    painter.rect_filled(bar_rect, 2.0, egui::Color32::from_rgb(40, 40, 40));
+                    let fill_width = bar_width * (stats.cpu_percent / 100.0).min(1.0);
+                    if fill_width > 0.0 {
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_width, bar_height)),
                             2.0,
-                            usage_color(vram_percent).linear_multiply(0.15),
+                            cpu_color,
                         );
-                        // Fill bar
-                        let fill_width = (bar_width * (vram_percent / 100.0)).min(bar_width);
-                        ui.painter().rect_filled(
-                            egui::Rect::from_min_size(
-                                bar_rect.min,
-                                egui::vec2(fill_width, bar_height),
-                            )
-                            .shrink(1.0),
-                            2.0,
-                            usage_color(vram_percent).linear_multiply(0.3),
-                        );
-                        // Text on top (centered)
-                        let text = format!("{:.0}% {}/{}", vram_percent, used, total);
-                        let text_pos = bar_rect.center();
-                        ui.painter().text(
-                            text_pos,
-                            egui::Align2::CENTER_CENTER,
-                            text,
-                            egui::FontId::new(10.0, egui::FontFamily::Monospace),
-                            egui::Color32::WHITE,
-                        );
-                        ui.advance_cursor_after_rect(bar_rect);
-                    });
+                    }
                     ui.label(
-                        egui::RichText::new(format!(" {:.0}°C", temp)).color(temp_color(temp)),
+                        egui::RichText::new(format!("{:.0}%", stats.cpu_percent))
+                            .color(cpu_color)
+                            .strong()
+                            .size(9.0),
                     );
-                    ui.separator();
-                }
+                    if let Some(cpu_temp) = stats.cpu_temperature {
+                        ui.label(
+                            egui::RichText::new(format!("{:.0}°C", cpu_temp))
+                                .color(temp_color(cpu_temp))
+                                .size(9.0),
+                        );
+                    }
+                });
 
+                ui.separator();
+
+                // RAM
                 let ram_percent = if stats.ram_total_mb > 0 {
                     (stats.ram_used_mb as f32 / stats.ram_total_mb as f32) * 100.0
                 } else {
                     0.0
                 };
-                ui.label(egui::RichText::new("RAM: ").color(egui::Color32::WHITE));
+                let ram_color = usage_color(ram_percent);
                 ui.horizontal(|ui| {
-                    let rect = ui.available_rect_before_wrap();
-                    let bar_width = 100.0;
-                    let bar_height = 16.0;
-                    let bar_rect = egui::Rect::from_min_size(
-                        rect.min + egui::vec2(0.0, (rect.height() - bar_height) / 2.0),
+                    ui.label(egui::RichText::new("RAM").strong().size(9.0));
+                    let bar_width = 50.0;
+                    let bar_height = 8.0;
+                    let (response, painter) = ui.allocate_painter(
                         egui::vec2(bar_width, bar_height),
+                        egui::Sense::hover(),
                     );
-                    // Background bar (very light)
-                    ui.painter().rect_filled(
-                        bar_rect.shrink(1.0),
-                        2.0,
-                        usage_color(ram_percent).linear_multiply(0.15),
-                    );
-                    // Fill bar
-                    let fill_width = (bar_width * (ram_percent / 100.0)).min(bar_width);
-                    ui.painter().rect_filled(
-                        egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_width, bar_height))
-                            .shrink(1.0),
-                        2.0,
-                        usage_color(ram_percent).linear_multiply(0.3),
-                    );
-                    // Text on top (centered)
-                    let text = format!(
-                        "{:.0}% {}/{}",
-                        ram_percent, stats.ram_used_mb, stats.ram_total_mb
-                    );
-                    let text_pos = bar_rect.center();
-                    ui.painter().text(
-                        text_pos,
-                        egui::Align2::CENTER_CENTER,
-                        text,
-                        egui::FontId::new(10.0, egui::FontFamily::Monospace),
-                        egui::Color32::WHITE,
-                    );
-                    ui.advance_cursor_after_rect(bar_rect);
-                });
-                ui.separator();
-
-                ui.label(egui::RichText::new("CPU: ").color(egui::Color32::WHITE));
-                ui.label(
-                    egui::RichText::new(format!("{:.1}%", stats.cpu_percent))
-                        .color(usage_color(stats.cpu_percent)),
-                );
-                if let Some(cpu_temp) = stats.cpu_temperature {
+                    let bar_rect = response.rect;
+                    painter.rect_filled(bar_rect, 2.0, egui::Color32::from_rgb(40, 40, 40));
+                    let fill_width = bar_width * (ram_percent / 100.0).min(1.0);
+                    if fill_width > 0.0 {
+                        painter.rect_filled(
+                            egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_width, bar_height)),
+                            2.0,
+                            ram_color,
+                        );
+                    }
                     ui.label(
-                        egui::RichText::new(format!(" ({:.0}°C)", cpu_temp))
-                            .color(temp_color(cpu_temp)),
+                        egui::RichText::new(format!("{:.0}%", ram_percent))
+                            .color(ram_color)
+                            .strong()
+                            .size(9.0),
                     );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{:.1}/{:.1}G",
+                            stats.ram_used_mb as f32 / 1024.0,
+                            stats.ram_total_mb as f32 / 1024.0
+                        ))
+                        .color(egui::Color32::GRAY)
+                        .size(8.0),
+                    );
+                });
+
+                // GPUs
+                for gpu_info in &self.gpus {
+                    ui.separator();
+                    let index = gpu_info.index as usize;
+                    let (used_vram, total_vram) = if index < stats.gpu_vram_usage.len() {
+                        (stats.gpu_vram_usage[index].1, stats.gpu_vram_usage[index].2)
+                    } else {
+                        (0, 0)
+                    };
+                    let vram_percent = if total_vram > 0 {
+                        (used_vram as f32 / total_vram as f32) * 100.0
+                    } else {
+                        0.0
+                    };
+                    let temp = if index < stats.gpu_temperatures.len() {
+                        stats.gpu_temperatures[index].temperature_c.unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
+                    let vram_color = usage_color(vram_percent);
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("GPU{}", gpu_info.index))
+                                .strong()
+                                .size(9.0),
+                        );
+                        let bar_width = 60.0;
+                        let bar_height = 8.0;
+                        let (response, painter) = ui.allocate_painter(
+                            egui::vec2(bar_width, bar_height),
+                            egui::Sense::hover(),
+                        );
+                        let bar_rect = response.rect;
+                        painter.rect_filled(bar_rect, 2.0, egui::Color32::from_rgb(40, 40, 40));
+                        let fill_width = bar_width * (vram_percent / 100.0).min(1.0);
+                        if fill_width > 0.0 {
+                            painter.rect_filled(
+                                egui::Rect::from_min_size(bar_rect.min, egui::vec2(fill_width, bar_height)),
+                                2.0,
+                                vram_color,
+                            );
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("{:.0}%", vram_percent))
+                                .color(vram_color)
+                                .strong()
+                                .size(9.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.1}/{:.1}G",
+                                used_vram as f32 / 1024.0,
+                                total_vram as f32 / 1024.0
+                            ))
+                            .color(egui::Color32::GRAY)
+                            .size(8.0),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("{:.0}°C", temp))
+                                .color(temp_color(temp))
+                                .size(9.0),
+                        );
+                    });
                 }
                 let current_status = self.server_controller.get_status();
                 let status_just_became_running =
