@@ -211,10 +211,35 @@ impl LlmProvider for LlamaCppProvider {
             &settings.binary_path
         };
 
+        // Determine HF repo ID: prefer explicit, then extract from path
+        let effective_hf_id = if !config.huggingface_id.is_empty() {
+            Some(config.huggingface_id.clone())
+        } else if !config.model_path.is_empty() {
+            extract_hf_repo_id_from_path(&config.model_path)
+        } else {
+            None
+        };
+
+        // Extract quantization from model path to append to HF ID
+        let quant_suffix = if !config.model_path.is_empty() {
+            let filename = std::path::Path::new(&config.model_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let quant = extract_quantization(&filename);
+            if quant != "unknown" {
+                format!(":{}", quant)
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
         if settings.env_script.is_empty() {
             cmd.push_str(binary);
-            if !config.huggingface_id.is_empty() {
-                cmd.push_str(&format!(" -hf \"{}\"", config.huggingface_id));
+            if let Some(hf_id) = effective_hf_id {
+                cmd.push_str(&format!(" -hf \"{}\"", hf_id + &quant_suffix));
             } else {
                 cmd.push_str(&format!(" -m \"{}\"", config.model_path));
             }
@@ -285,8 +310,8 @@ impl LlmProvider for LlamaCppProvider {
             let mut inner = String::new();
             inner.push_str(&format!("source \"{}\" && ", settings.env_script));
             inner.push_str(&format!("\"{}\" ", binary));
-            if !config.huggingface_id.is_empty() {
-                inner.push_str(&format!("-hf \"{}\" ", config.huggingface_id));
+            if let Some(hf_id) = effective_hf_id {
+                inner.push_str(&format!("-hf \"{}\" ", hf_id + &quant_suffix));
             } else {
                 inner.push_str(&format!("-m \"{}\" ", config.model_path));
             }
@@ -717,16 +742,42 @@ fn extract_model_name_from_path(path: &std::path::Path, filename: &str) -> Strin
 
 fn extract_quantization(filename: &str) -> String {
     let lower = filename.to_lowercase();
+
+    // Weight quantization patterns (from filename)
+    // Order matters: check more specific patterns first
     let quantizations = [
-        "q4_0", "q4_1", "q5_0", "q5_1", "q6_0", "q8_0", "f16", "q2_k", "q3_k", "q4_k", "q5_k",
-        "q6_k",
+        // Standard Q4_K_M style
+        "q4_k_m", "q4_k_s", "q5_k_m", "q5_k_s", "q6_k",
+        "q2_k", "q3_k", "q4_k", "q5_k", "q6_k",
+        "q4_0", "q4_1", "q5_0", "q5_1", "q6_0", "q8_0",
+        "f16", "f32", "bf16",
+        // Unsloth variants with prefixes
+        "ud-q5_k_xl", "ud-q4_k_m", "ud-q5_k_m", "ud-q6_k",
+        "mxfp4_moe", "mxfp4", "mxfp6", "mxfp8",
+        // Other variants
+        "iq3_m", "iq4_xs", "iq4_nl", "q3_k_s", "q3_k_m", "q3_k_l",
+        "q4_k_l", "q5_k_l", "q6_k_l", "q8_k", "q8_k_m",
     ];
 
     for q in &quantizations {
-        if lower.contains(*q) {
+        if lower.contains(q) {
             return q.to_string();
         }
     }
+
+    // Try to extract any Q/X pattern like Q4, Q5, etc.
+    if let Some(pos) = lower.find('q') {
+        let after = &lower[pos..];
+        if after.len() >= 2 && after.chars().nth(1).unwrap().is_ascii_digit() {
+            let end = after
+                .char_indices()
+                .find(|(_, c)| !c.is_alphanumeric() && *c != '_')
+                .map(|(i, _)| i)
+                .unwrap_or(after.len());
+            return after[..end].to_string();
+        }
+    }
+
     "unknown".to_string()
 }
 
@@ -734,6 +785,30 @@ fn extract_quantization(filename: &str) -> String {
 pub fn read_gguf_n_layer(path: &str) -> Option<u32> {
     if let Some(meta) = crate::services::get_model_metadata(path) {
         return meta.n_layer;
+    }
+    None
+}
+
+/// Extract HuggingFace repo ID from local cache path
+/// Returns Some("user/repo") if path is in HF cache format
+pub fn extract_hf_repo_id_from_path(path: &str) -> Option<String> {
+    let path_obj = std::path::Path::new(path);
+    let mut current = path_obj;
+
+    // Walk up to 5 levels up
+    for _ in 0..5 {
+        if let Some(parent) = current.parent() {
+            if let Some(dir_name) = parent.file_name() {
+                let dir_name = dir_name.to_string_lossy();
+                if dir_name.starts_with("models--") {
+                    let repo_id = dir_name.strip_prefix("models--")?;
+                    return Some(repo_id.replace("--", "/").to_string());
+                }
+            }
+            current = parent;
+        } else {
+            break;
+        }
     }
     None
 }

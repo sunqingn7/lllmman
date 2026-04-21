@@ -507,53 +507,70 @@ impl App {
                             let frame_shape = card_frame.paint(response.rect);
                             ui.painter().add(frame_shape);
 
-                            let (creator, model_name) = if let Some(pos) = model.name.rfind('/') {
-                    let (c, n) = model.name.split_at(pos);
-                    (c, &n[1..]) // Skip the '/' character
-                } else {
-                    ("", model.name.as_str())
-                };
+        // Extract filename for display (shows quantization difference like Q4_K_M vs UD-Q5_K_XL)
+        let filename = std::path::Path::new(&model.path)
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| model.name.clone());
 
-                // Creator line (small font)
-                if !creator.is_empty() {
-                    let creator_rect = egui::Rect::from_min_size(
-                        response.rect.min + egui::vec2(8.0, 2.0),
-                        egui::vec2(response.rect.width() - 16.0, 12.0),
-                    );
-                    ui.painter().text(
-                        creator_rect.min,
-                        egui::Align2::LEFT_TOP,
-                        creator,
-                        egui::FontId::new(10.0, egui::FontFamily::Proportional),
-                        subtext_color,
-                    );
-                }
+        let (creator, model_name) = if let Some(pos) = model.name.rfind('/') {
+            let (c, n) = model.name.split_at(pos);
+            (c, &n[1..]) // Skip the '/' character
+        } else {
+            ("", model.name.as_str())
+        };
 
-                // Model name line (big bold font)
-                let model_name_rect = egui::Rect::from_min_size(
-                    response.rect.min + egui::vec2(8.0, if creator.is_empty() { 2.0 } else { 14.0 }),
-                    egui::vec2(response.rect.width() - 16.0, 18.0),
-                );
-                ui.painter().text(
-                    model_name_rect.min,
-                    egui::Align2::LEFT_TOP,
-                    model_name,
-                    egui::FontId::new(13.0, egui::FontFamily::Monospace),
-                    text_color,
-                );
+        // Creator line (small font) - show filename for differentiation
+        let display_line = if filename != model_name {
+            format!("{} • {}", creator, filename)
+        } else {
+            creator.to_string()
+        };
 
-                // Details line
-                let detail_text = format!(
-                    "{:.1} GB • {} • {}",
-                    model.size_gb,
-                    model.quantization,
-                    match model.model_type {
-                        crate::models::ModelType::TextOnly => "Text",
-                        crate::models::ModelType::Tooling => "Tool",
-                        crate::models::ModelType::Vision => "Vision",
-                        crate::models::ModelType::Multimodal => "Multi",
-                    }
-                );
+        if !display_line.is_empty() {
+            let creator_rect = egui::Rect::from_min_size(
+                response.rect.min + egui::vec2(8.0, 2.0),
+                egui::vec2(response.rect.width() - 16.0, 12.0),
+            );
+            ui.painter().text(
+                creator_rect.min,
+                egui::Align2::LEFT_TOP,
+                &display_line,
+                egui::FontId::new(10.0, egui::FontFamily::Proportional),
+                subtext_color,
+            );
+        }
+
+        // Model name line (big bold font)
+        let model_name_rect = egui::Rect::from_min_size(
+            response.rect.min + egui::vec2(8.0, if display_line.is_empty() { 2.0 } else { 14.0 }),
+            egui::vec2(response.rect.width() - 16.0, 18.0),
+        );
+        ui.painter().text(
+            model_name_rect.min,
+            egui::Align2::LEFT_TOP,
+            model_name,
+            egui::FontId::new(13.0, egui::FontFamily::Monospace),
+            text_color,
+        );
+
+        // Details line - show quantization prominently
+        let quant_display = if model.quantization != "unknown" {
+            model.quantization.to_uppercase()
+        } else {
+            "unknown".to_string()
+        };
+        let detail_text = format!(
+            "{:.1} GB • {} • {}",
+            model.size_gb,
+            quant_display,
+            match model.model_type {
+                crate::models::ModelType::TextOnly => "Text",
+                crate::models::ModelType::Tooling => "Tool",
+                crate::models::ModelType::Vision => "Vision",
+                crate::models::ModelType::Multimodal => "Multi",
+            }
+        );
                 let detail_y = if creator.is_empty() { 20.0 } else { 32.0 };
                 let detail_rect = egui::Rect::from_min_size(
                     response.rect.min + egui::vec2(8.0, detail_y),
@@ -597,27 +614,44 @@ impl App {
                     }
                 }
 
-                if let Some(config) =
-                    load_model_config(&model.path, &self.selected_provider)
-                {
-                                    self.server_config = config;
-                                    self.server_config.model_path = model.path.clone();
-                                } else if let Some(fallback) =
-                                    get_fallback_config(&self.selected_provider)
-                                {
-                                    self.server_config.context_size = fallback.context_size;
-                                    self.server_config.batch_size = fallback.batch_size;
-                                    self.server_config.gpu_layers = fallback.gpu_layers;
-                                    self.server_config.threads = fallback.threads;
-                                    self.server_config.port = fallback.port;
-                                    self.server_config.host = fallback.host;
-                                    self.server_config.cache_type_k = fallback.cache_type_k;
-                                    self.server_config.cache_type_v = fallback.cache_type_v;
-                                    self.server_config.num_prompt_tracking =
-                                        fallback.num_prompt_tracking;
-                                    self.server_config.additional_args = fallback.additional_args;
-                                    self.server_config.tokenizer = fallback.tokenizer;
-                                }
+                    // Auto-extract HF repo ID from path for llama.cpp models
+                    if self.selected_provider == "llama.cpp" {
+                        if let Some(hf_id) =
+                            crate::providers::llama_cpp::extract_hf_repo_id_from_path(&model.path)
+                        {
+                            self.server_config.huggingface_id = hf_id;
+                        }
+                    }
+
+                    if let Some(config) =
+                        load_model_config(&model.path, &self.selected_provider)
+                    {
+                        self.server_config = config;
+                        self.server_config.model_path = model.path.clone();
+                        // Re-apply HF ID extraction since load_model_config may clear it
+                        if self.selected_provider == "llama.cpp" {
+                            if let Some(hf_id) =
+                                crate::providers::llama_cpp::extract_hf_repo_id_from_path(&model.path)
+                            {
+                                self.server_config.huggingface_id = hf_id;
+                            }
+                        }
+                    } else if let Some(fallback) =
+                        get_fallback_config(&self.selected_provider)
+                    {
+                        self.server_config.context_size = fallback.context_size;
+                        self.server_config.batch_size = fallback.batch_size;
+                        self.server_config.gpu_layers = fallback.gpu_layers;
+                        self.server_config.threads = fallback.threads;
+                        self.server_config.port = fallback.port;
+                        self.server_config.host = fallback.host;
+                        self.server_config.cache_type_k = fallback.cache_type_k;
+                        self.server_config.cache_type_v = fallback.cache_type_v;
+                        self.server_config.num_prompt_tracking =
+                            fallback.num_prompt_tracking;
+                        self.server_config.additional_args = fallback.additional_args;
+                        self.server_config.tokenizer = fallback.tokenizer;
+                    }
 
                                 if self.selected_provider == "llama.cpp" {
                                     let model_size_gb = model.size_gb;
