@@ -248,16 +248,29 @@ impl LlmProvider for SglangProvider {
         }
 
         let name = path.split('/').last().unwrap_or(path).to_string();
+
+        // Try to get size from local cache if model exists there
         let size_gb = if Path::new(path).exists() {
-            calculate_dir_size(path)
+            // Local file or directory exists
+            if Path::new(path).is_dir() {
+                calculate_dir_size(path)
+            } else {
+                // Single file - get its size
+                std::fs::metadata(path)
+                    .map(|m| m.len() as f32 / (1024.0 * 1024.0 * 1024.0))
+                    .unwrap_or(0.0)
+            }
         } else {
-            0.0
+            // Path doesn't exist locally, try to find in HF cache
+            find_huggingface_model_path(path)
+                .map(|cache_path| calculate_dir_size(&cache_path))
+                .unwrap_or(0.0)
         };
 
         Ok(ModelInfo {
             path: path.to_string(),
             name,
-            size_gb,
+            size_gb: (size_gb * 100.0).round() / 100.0,
             quantization: "unknown".to_string(),
             model_type: ModelType::TextOnly,
             is_moe: false,
@@ -611,7 +624,7 @@ fn detect_quantization(model_dir: &Path) -> String {
     "unknown".to_string()
 }
 
-fn find_huggingface_model_path(model_id: &str) -> Option<String> {
+pub fn find_huggingface_model_path(model_id: &str) -> Option<String> {
     let possible_paths = [
         dirs::cache_dir().map(|p| {
             p.join("huggingface")

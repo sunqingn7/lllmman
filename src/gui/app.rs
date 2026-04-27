@@ -4,6 +4,75 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+/// Open a folder in the system's file manager
+fn open_folder(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        // Try xdg-open first (most common on Linux)
+        match std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => {
+                // xdg-open not available, try other options
+                eprintln!("xdg-open failed: {}", e);
+            }
+        }
+
+        // Try to use DBus to open the file manager (GNOME/Nautilus)
+        match std::process::Command::new("nautilus")
+            .arg(path)
+            .spawn()
+        {
+            Ok(_) => return Ok(()),
+            Err(_) => {}
+        }
+
+        // Try KDE's Dolphin
+        match std::process::Command::new("dolphin")
+            .arg(path)
+            .spawn()
+        {
+            Ok(_) => return Ok(()),
+            Err(_) => {}
+        }
+
+        // Try Thunar (XFCE)
+        match std::process::Command::new("thunar")
+            .arg(path)
+            .spawn()
+        {
+            Ok(_) => return Ok(()),
+            Err(_) => {}
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        match std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => return Err(format!("Failed to open: {}", e)),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        match std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+        {
+            Ok(_) => return Ok(()),
+            Err(e) => return Err(format!("Failed to open: {}", e)),
+        }
+    }
+
+    Err("No file manager found".to_string())
+}
+
 use crate::core::{
     LlmProvider, LogBuffer, LogLevel, ModelInfo, ModelSource, ProviderConfig, ProviderRegistry,
     ProviderSettings, ServerController,
@@ -57,6 +126,8 @@ pub struct App {
     cached_stats: Option<(u32, MonitorStats)>,
     previous_server_status: crate::models::ServerStatus,
     needs_repaint: Arc<AtomicBool>,
+    // Queue for models to delete (collected during UI rendering, processed after)
+    models_to_delete: Vec<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -178,6 +249,7 @@ impl App {
             cached_stats: None,
             previous_server_status: crate::models::ServerStatus::Stopped,
             needs_repaint: Arc::new(AtomicBool::new(false)),
+            models_to_delete: Vec::new(),
         }
     }
 
@@ -446,6 +518,56 @@ impl App {
                 ui.separator();
 
                 let provider_supports_gguf = self.get_current_provider().supports_gguf();
+
+                // Recalculate size for models with size 0 (not yet loaded from cache)
+                let current_provider = self.selected_provider.clone();
+                for model in self.models.iter_mut() {
+                    if model.size_gb <= 0.0 {
+                        // Try to recalculate size based on provider
+                        let new_size = if current_provider == "llama.cpp" {
+                            // For llama.cpp, check if the file exists
+                            if let Ok(meta) = std::fs::metadata(&model.path) {
+                                meta.len() as f32 / (1024.0 * 1024.0 * 1024.0)
+                            } else {
+                                0.0
+                            }
+                        } else {
+                            // For vLLM/SGLang, try to find in HF cache
+                            crate::providers::vllm::find_huggingface_model_path(&model.path)
+                                .or_else(|| crate::providers::sglang::find_huggingface_model_path(&model.path))
+                                .map(|cache_path| {
+                                    // Calculate directory size
+                                    fn calc_size(path: &std::path::Path) -> u64 {
+                                        let mut total = 0u64;
+                                        if let Ok(entries) = std::fs::read_dir(path) {
+                                            for entry in entries.flatten() {
+                                                if let Ok(meta) = entry.metadata() {
+                                                    if meta.is_dir() {
+                                                        total += calc_size(&entry.path());
+                                                    } else {
+                                                        total += meta.len();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        total
+                                    }
+                                    calc_size(std::path::Path::new(&cache_path)) as f32
+                                        / (1024.0 * 1024.0 * 1024.0)
+                                })
+                                .unwrap_or(0.0)
+                        };
+
+                        if new_size > 0.0 {
+                            model.size_gb = (new_size * 100.0).round() / 100.0;
+                            self.log_buffer.push_info(format!(
+                                "Updated size for '{}': {:.2} GB",
+                                model.name, model.size_gb
+                            ));
+                        }
+                    }
+                }
+
                 let filtered: Vec<_> = self
                     .models
                     .iter()
@@ -707,19 +829,252 @@ impl App {
                                             }
                                             self.server_config.huggingface_id = hf_id;
                                             self.server_config.tokenizer = tokenizer;
-                                        } else {
-                                            self.log_buffer
-                                                .push_warn("Could not auto-detect HuggingFace ID or tokenizer for GGUF model".to_string());
-                                        }
-                                    }
-                                }
-                            }
+                    } else {
+                        self.log_buffer
+                            .push_warn("Could not auto-detect HuggingFace ID or tokenizer for GGUF model".to_string());
+                    }
+                }
+            }
+        }
 
-                            ui.add_space(4.0);
-                        }
-                    });
-                });
+        // Right-click context menu for model tile
+        let model_path_clone = model.path.clone();
+        let model_name_clone = model.name.clone();
+
+        // Try to get HF repo ID from path or from model name
+        let hf_repo_id = crate::providers::llama_cpp::extract_hf_repo_id_from_path(&model_path_clone)
+            .or_else(|| {
+                // Try to extract from model name if it contains "/"
+                if model_name_clone.contains('/') && !model_name_clone.starts_with('/') {
+                    Some(model_name_clone.clone())
+                } else {
+                    None
+                }
             });
+
+        response.context_menu(|ui| {
+            ui.set_min_width(200.0);
+
+            // Open Webpage option
+            if let Some(hf_id) = &hf_repo_id {
+                if ui.button("🌐 Open HuggingFace Page").clicked() {
+                    let url = format!("https://huggingface.co/{}", hf_id);
+                    if let Err(e) = webbrowser::open(&url) {
+                        self.log_buffer.push_error(format!("Failed to open browser: {}", e));
+                    } else {
+                        self.log_buffer.push_info(format!("Opened: {}", url));
+                    }
+                    ui.close_menu();
+                }
+            } else {
+                ui.add_enabled(false, egui::Button::new("🌐 Open HuggingFace Page"));
+                ui.weak("  (No HF info found)");
+            }
+
+            ui.separator();
+
+            // Open Local Folder option
+            if ui.button("📁 Open Local Folder").clicked() {
+                // Determine the actual folder path
+                // For HF models (e.g., sglang/vllm), model.path might be a repo ID
+                let path_exists = std::path::Path::new(&model_path_clone).exists();
+                let looks_like_hf_id = model_path_clone.contains('/')
+                    && !model_path_clone.starts_with('/')
+                    && !path_exists;
+
+                self.log_buffer.push_info(format!(
+                    "[Debug] model_path: {}, exists: {}, looks_like_hf_id: {}",
+                    model_path_clone, path_exists, looks_like_hf_id
+                ));
+
+                let folder_to_open: Option<std::path::PathBuf> = if looks_like_hf_id {
+                    // This looks like a HuggingFace repo ID, try to find the cache path
+                    let sglang_path = crate::providers::sglang::find_huggingface_model_path(&model_path_clone);
+                    let vllm_path = crate::providers::vllm::find_huggingface_model_path(&model_path_clone);
+
+                    self.log_buffer.push_info(format!(
+                        "[Debug] sglang_path: {:?}, vllm_path: {:?}",
+                        sglang_path, vllm_path
+                    ));
+
+                    let cache_path = sglang_path.or(vllm_path);
+
+                    if let Some(ref path) = cache_path {
+                        self.log_buffer.push_info(format!(
+                            "[Debug] Found HF cache path: {}",
+                            path
+                        ));
+                        // Use the cache path directly - it's already the folder containing the model
+                        Some(std::path::Path::new(path).to_path_buf())
+                    } else {
+                        // Model not found with GGUF files, try to find the HF cache folder anyway
+                        let hf_cache_path = dirs::cache_dir()
+                            .map(|p| p.join("huggingface").join("hub"))
+                            .filter(|p| p.exists());
+
+                        if let Some(cache_dir) = hf_cache_path {
+                            let model_cache_dir = cache_dir
+                                .join(format!("models--{}", model_path_clone.replace('/', "--")));
+
+                            if model_cache_dir.exists() {
+                                self.log_buffer.push_info(format!(
+                                    "[Debug] Opening HF cache folder: {}",
+                                    model_cache_dir.display()
+                                ));
+                                Some(model_cache_dir)
+                            } else {
+                                self.log_buffer.push_warn(format!(
+                                    "Model '{}' not found in local cache. Cache folder does not exist: {}",
+                                    model_path_clone,
+                                    model_cache_dir.display()
+                                ));
+                                // Still try to open the parent HF cache directory
+                                Some(cache_dir)
+                            }
+                        } else {
+                            self.log_buffer.push_warn(format!(
+                                "Model '{}' not found in local cache. Have you downloaded it?",
+                                model_path_clone
+                            ));
+                            None
+                        }
+                    }
+                } else if path_exists {
+                    // Regular file path - get the parent directory
+                    std::path::Path::new(&model_path_clone).parent().map(|p| p.to_path_buf())
+                } else {
+                    self.log_buffer.push_warn(format!(
+                        "Path does not exist: {}",
+                        model_path_clone
+                    ));
+                    None
+                };
+
+                if let Some(folder_path) = folder_to_open {
+                    if folder_path.exists() {
+                        self.log_buffer.push_info(format!(
+                            "[Debug] Opening folder: {}",
+                            folder_path.display()
+                        ));
+                        // Try to open folder using platform-specific method
+                        let result = open_folder(&folder_path);
+                        if let Err(e) = result {
+                            self.log_buffer.push_error(format!(
+                                "Failed to open folder: {}",
+                                e
+                            ));
+                        } else {
+                            self.log_buffer.push_info(format!(
+                                "Opened folder: {}",
+                                folder_path.display()
+                            ));
+                        }
+                    } else {
+                        self.log_buffer.push_error(format!(
+                            "Folder does not exist: {}",
+                            folder_path.display()
+                        ));
+                    }
+                } else {
+                    self.log_buffer.push_error("Could not determine model folder".to_string());
+                }
+                ui.close_menu();
+            }
+
+            ui.separator();
+
+            // Delete option
+            if ui.button("🗑️ Delete Model").clicked() {
+                // Determine the actual folder to delete
+                let path_exists = std::path::Path::new(&model_path_clone).exists();
+                let looks_like_hf_id = model_path_clone.contains('/')
+                    && !model_path_clone.starts_with('/')
+                    && !path_exists;
+
+                let folder_to_delete: Option<std::path::PathBuf> = if looks_like_hf_id {
+                    // For HF models, try to find the cache directory
+                    let sglang_path = crate::providers::sglang::find_huggingface_model_path(&model_path_clone);
+                    let vllm_path = crate::providers::vllm::find_huggingface_model_path(&model_path_clone);
+                    let cache_path = sglang_path.or(vllm_path);
+
+                    if let Some(ref path) = cache_path {
+                        // Get the parent of the found path (the snapshot folder)
+                        std::path::Path::new(path).parent().map(|p| p.to_path_buf())
+                    } else {
+                        // Try the HF cache directory directly
+                        dirs::cache_dir()
+                            .map(|p| p.join("huggingface").join("hub"))
+                            .filter(|p| p.exists())
+                            .map(|cache_dir| cache_dir.join(format!("models--{}", model_path_clone.replace('/', "--"))))
+                            .filter(|p| p.exists())
+                    }
+                } else if path_exists {
+                    // Regular file path - get the parent directory
+                    std::path::Path::new(&model_path_clone).parent().map(|p| p.to_path_buf())
+                } else {
+                    None
+                };
+
+                if let Some(model_dir) = folder_to_delete {
+                    self.log_buffer.push_info(format!(
+                        "[Debug] Attempting to delete: {}",
+                        model_dir.display()
+                    ));
+                    if model_dir.exists() {
+                        match std::fs::remove_dir_all(&model_dir) {
+                            Ok(_) => {
+                                self.log_buffer.push_info(format!(
+                                    "Deleted model directory: {}",
+                                    model_dir.display()
+                                ));
+                                // Queue model path for deletion after context menu closes
+                                self.models_to_delete.push(model_path_clone.clone());
+                            }
+                            Err(e) => {
+                                self.log_buffer.push_error(format!(
+                                    "Failed to delete model directory '{}': {}",
+                                    model_dir.display(),
+                                    e
+                                ));
+                            }
+                        }
+                    } else {
+                        self.log_buffer.push_error(format!(
+                            "Cannot delete - folder does not exist: {}",
+                            model_dir.display()
+                        ));
+                    }
+                } else {
+                    self.log_buffer.push_error(format!(
+                        "Could not determine folder to delete for: {}",
+                        model_path_clone
+                    ));
+                }
+                ui.close_menu();
+            }
+        });
+
+                ui.add_space(4.0);
+            }
+        });
+    });
+
+    // Process any queued model deletions after the UI loop
+    if !self.models_to_delete.is_empty() {
+        let to_delete: Vec<String> = std::mem::take(&mut self.models_to_delete);
+        for path in to_delete {
+            if let Some(pos) = self.models.iter().position(|m| m.path == path) {
+                self.models.remove(pos);
+                if self.selected_model == Some(pos) {
+                    self.selected_model = None;
+                    self.server_config.model_path.clear();
+                } else if self.selected_model.map(|s| s > pos).unwrap_or(false) {
+                    self.selected_model = self.selected_model.map(|s| s - 1);
+                }
+            }
+        }
+    }
+});
 
         egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.heading("Server Config");

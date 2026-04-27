@@ -1,5 +1,8 @@
 pub mod provider;
-pub use provider::SglangProvider;
+pub use provider::{
+    find_huggingface_model_path,
+    SglangProvider
+};
 
 use crate::core::LlmProvider;
 use crate::register_provider;

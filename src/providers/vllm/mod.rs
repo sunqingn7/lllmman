@@ -1,6 +1,10 @@
 pub mod provider;
 
-pub use provider::{get_gguf_tokenizer_info, VllmProvider};
+pub use provider::{
+    find_huggingface_model_path,
+    get_gguf_tokenizer_info,
+    VllmProvider
+};
 
 use crate::core::LlmProvider;
 use crate::register_provider;
