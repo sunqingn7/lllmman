@@ -2,3 +2,5 @@ docs/plans/*.md
 session-*.md
 target/debug/
 target/release/
+target/flycheck0/
+.opencode/
