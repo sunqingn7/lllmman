@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use once_cell::sync::Lazy;
 
 use crate::core::{
     DetectedServer, LlmProvider, ModelInfo, OptionValueType, ProviderConfig, ProviderError,
@@ -21,6 +22,17 @@ impl SglangProvider {
         }
     }
 }
+
+static SGLANG_SERVER_PATH: Lazy<String> = Lazy::new(|| {
+    std::process::Command::new("which")
+        .arg("sglang")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "sglang".to_string())
+});
 
 impl Default for SglangProvider {
     fn default() -> Self {
@@ -74,17 +86,8 @@ impl LlmProvider for SglangProvider {
     }
 
     fn default_settings(&self) -> ProviderSettings {
-        let binary_path = std::process::Command::new("which")
-            .arg("sglang")
-            .output()
-            .ok()
-            .and_then(|out| String::from_utf8(out.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "sglang".to_string());
-
         ProviderSettings {
-            binary_path,
+            binary_path: SGLANG_SERVER_PATH.clone(),
             env_script: String::new(),
             additional_args: String::new(),
             health_endpoint: "/health".to_string(),
@@ -430,9 +433,8 @@ impl LlmProvider for SglangProvider {
                 }
                 "--tp-size" | "--tensor-parallel-size" => {
                     if i + 1 < args.len() {
-                        if let Ok(val) = args[i + 1].parse() {
-                            config.threads = val;
-                        }
+                        additional_args.push(arg);
+                        additional_args.push(args[i + 1]);
                         i += 1;
                     }
                 }
@@ -652,19 +654,28 @@ pub fn find_huggingface_model_path(model_id: &str) -> Option<String> {
                     continue;
                 }
 
+                // Check for HF model files (config.json, safetensors, pytorch_model, or GGUF)
                 if let Ok(sub_entries) = std::fs::read_dir(&snapshot_path) {
                     for sub in sub_entries.flatten() {
                         let sub_path = sub.path();
+                        let name = sub_path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                        let name_lower = name.to_lowercase();
+                        if name_lower == "config.json"
+                            || name_lower.ends_with(".safetensors")
+                            || name_lower == "pytorch_model.bin"
+                            || name_lower.ends_with(".gguf")
+                        {
+                            return Some(snapshot_path.to_string_lossy().to_string());
+                        }
                         if sub_path.is_dir() {
-                            if let Ok(gguf_entries) = std::fs::read_dir(&sub_path) {
-                                for gguf in gguf_entries.flatten() {
-                                    if gguf.path().to_string_lossy().ends_with(".gguf") {
-                                        return Some(sub_path.to_string_lossy().to_string());
+                            if let Ok(sub2) = std::fs::read_dir(&sub_path) {
+                                for s2 in sub2.flatten() {
+                                    let n2 = s2.file_name().to_string_lossy().to_lowercase();
+                                    if n2.ends_with(".safetensors") || n2 == "pytorch_model.bin" || n2.ends_with(".gguf") {
+                                        return Some(snapshot_path.to_string_lossy().to_string());
                                     }
                                 }
                             }
-                        } else if sub_path.to_string_lossy().ends_with(".gguf") {
-                            return Some(snapshot_path.to_string_lossy().to_string());
                         }
                     }
                 }

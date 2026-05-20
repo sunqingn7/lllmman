@@ -480,9 +480,8 @@ impl LlmProvider for VllmProvider {
         }
                 "--max-num-seqs" => {
                     if i + 1 < args.len() {
-                        if let Ok(val) = args[i + 1].parse() {
-                            config.threads = val;
-                        }
+                        additional_args.push(arg);
+                        additional_args.push(args[i + 1]);
                         i += 1;
                     }
                 }
@@ -645,13 +644,7 @@ fn detect_quantization_and_moe(model_dir: &Path) -> (String, bool) {
     ("unknown".to_string(), false)
 }
 
-#[allow(dead_code)]
-fn detect_quantization(model_dir: &Path) -> String {
-    detect_quantization_and_moe(model_dir).0
-}
-
 pub fn find_huggingface_model_path(model_id: &str) -> Option<String> {
-    // Check common HF cache locations
     let possible_paths = [
         dirs::cache_dir().map(|p| {
             p.join("huggingface")
@@ -672,7 +665,6 @@ pub fn find_huggingface_model_path(model_id: &str) -> Option<String> {
             continue;
         }
 
-        // Look for snapshots
         if let Ok(entries) = std::fs::read_dir(path) {
             for entry in entries.flatten() {
                 let snapshot_path = entry.path();
@@ -680,21 +672,29 @@ pub fn find_huggingface_model_path(model_id: &str) -> Option<String> {
                     continue;
                 }
 
-                // Check for GGUF files in the snapshot
+                // Check for HF model files (config.json, safetensors, pytorch_model, or GGUF)
                 if let Ok(sub_entries) = std::fs::read_dir(&snapshot_path) {
                     for sub in sub_entries.flatten() {
                         let sub_path = sub.path();
+                        let name = sub_path.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
+                        let name_lower = name.to_lowercase();
+                        if name_lower == "config.json"
+                            || name_lower.ends_with(".safetensors")
+                            || name_lower == "pytorch_model.bin"
+                            || name_lower.ends_with(".gguf")
+                        {
+                            return Some(snapshot_path.to_string_lossy().to_string());
+                        }
+                        // Also check subdirectories (e.g., for sharded models)
                         if sub_path.is_dir() {
-                            // Check if it contains GGUF files
-                            if let Ok(gguf_entries) = std::fs::read_dir(&sub_path) {
-                                for gguf in gguf_entries.flatten() {
-                                    if gguf.path().to_string_lossy().ends_with(".gguf") {
-                                        return Some(sub_path.to_string_lossy().to_string());
+                            if let Ok(sub2) = std::fs::read_dir(&sub_path) {
+                                for s2 in sub2.flatten() {
+                                    let n2 = s2.file_name().to_string_lossy().to_lowercase();
+                                    if n2.ends_with(".safetensors") || n2 == "pytorch_model.bin" || n2.ends_with(".gguf") {
+                                        return Some(snapshot_path.to_string_lossy().to_string());
                                     }
                                 }
                             }
-                        } else if sub_path.to_string_lossy().ends_with(".gguf") {
-                            return Some(snapshot_path.to_string_lossy().to_string());
                         }
                     }
                 }
@@ -784,8 +784,12 @@ pub fn get_gguf_tokenizer_info(gguf_path: &str) -> Option<(String, String, Vec<S
         candidates
     ));
 
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .ok()?;
+
     for repo_id in &candidates {
-        // If the repo looks like a GGUF repo (ends with -GGUF or contains -GGUF-)
         if repo_id.ends_with("-GGUF") || repo_id.contains("-GGUF-") {
             let base_repo = repo_id
                 .split("-GGUF")
@@ -796,7 +800,7 @@ pub fn get_gguf_tokenizer_info(gguf_path: &str) -> Option<(String, String, Vec<S
 
             logs.push(format!("[vLLM GGUF] Checking base repo: {}", base_repo));
 
-            if let Ok(resp) = reqwest::blocking::get(&api_url) {
+            if let Ok(resp) = client.get(&api_url).send() {
                 if resp.status().is_success() {
                     if let Ok(json) = resp.text() {
                         if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json) {
@@ -812,13 +816,12 @@ pub fn get_gguf_tokenizer_info(gguf_path: &str) -> Option<(String, String, Vec<S
                 }
             }
 
-            // Try progressively shorter names
             let parts: Vec<&str> = repo_id.split('-').collect();
             for i in (1..parts.len()).rev() {
                 let candidate = parts[..i].join("-");
                 let api_url = format!("https://huggingface.co/api/models/{}", candidate);
                 logs.push(format!("[vLLM GGUF] Trying fallback: {}", candidate));
-                if let Ok(resp) = reqwest::blocking::get(&api_url) {
+                if let Ok(resp) = client.get(&api_url).send() {
                     if resp.status().is_success() {
                         logs.push(format!(
                             "[vLLM GGUF] Found via fallback! tokenizer={}",
@@ -829,13 +832,12 @@ pub fn get_gguf_tokenizer_info(gguf_path: &str) -> Option<(String, String, Vec<S
                 }
             }
         } else {
-            // For non-GGUF-named repos (e.g. filename-based), try it directly
             let api_url = format!("https://huggingface.co/api/models/{}", repo_id);
             logs.push(format!(
                 "[vLLM GGUF] Trying non-GGUF candidate: {}",
                 repo_id
             ));
-            if let Ok(resp) = reqwest::blocking::get(&api_url) {
+            if let Ok(resp) = client.get(&api_url).send() {
                 if resp.status().is_success() {
                     if let Ok(json) = resp.text() {
                         if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&json) {

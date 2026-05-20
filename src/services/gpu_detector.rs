@@ -216,8 +216,48 @@ pub fn get_gpu_usage(index: u32) -> Result<GpuUsage, String> {
 }
 
 pub fn get_all_gpu_usage() -> Vec<GpuUsage> {
-    detect_gpus()
-        .iter()
+    let gpus = detect_gpus();
+    if gpus.is_empty() {
+        return Vec::new();
+    }
+
+    // Batch query all GPUs in a single nvidia-smi call
+    if gpus.iter().all(|g| g.provider == GpuProvider::Nvidia) {
+        if let Ok(output) = Command::new("nvidia-smi")
+            .args([
+                "--query-gpu=index,memory.used,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let mut result = Vec::new();
+                for line in stdout.lines() {
+                    let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+                    if parts.len() >= 3 {
+                        if let (Ok(index), Ok(used), Ok(temp)) = (
+                            parts[0].parse::<u32>(),
+                            parts[1].parse::<u32>(),
+                            parts[2].parse::<u32>(),
+                        ) {
+                            result.push(GpuUsage {
+                                index,
+                                used_vram_mb: used,
+                                temperature_c: Some(temp as f32),
+                            });
+                        }
+                    }
+                }
+                if !result.is_empty() {
+                    return result;
+                }
+            }
+        }
+    }
+
+    // Fallback: per-GPU queries (AMD, Intel, or mixed)
+    gpus.iter()
         .filter_map(get_gpu_usage_for_gpu)
         .collect()
 }

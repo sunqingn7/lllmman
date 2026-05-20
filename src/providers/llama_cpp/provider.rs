@@ -1,4 +1,5 @@
 use std::process::{Command, Stdio};
+use once_cell::sync::Lazy;
 
 use crate::core::{
     CpuOffloadMode, DetectedServer, LlmProvider, ModelInfo, OptionValueType, ProviderConfig,
@@ -19,6 +20,17 @@ impl LlamaCppProvider {
         }
     }
 }
+
+static LLAMA_SERVER_PATH: Lazy<String> = Lazy::new(|| {
+    std::process::Command::new("which")
+        .arg("llama-server")
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "llama-server".to_string())
+});
 
 impl Default for LlamaCppProvider {
     fn default() -> Self {
@@ -128,17 +140,8 @@ impl LlmProvider for LlamaCppProvider {
     }
 
     fn default_settings(&self) -> ProviderSettings {
-        let binary_path = std::process::Command::new("which")
-            .arg("llama-server")
-            .output()
-            .ok()
-            .and_then(|out| String::from_utf8(out.stdout).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "llama-server".to_string());
-
         ProviderSettings {
-            binary_path,
+            binary_path: LLAMA_SERVER_PATH.clone(),
             env_script: String::new(),
             additional_args: String::new(),
             health_endpoint: "/health".to_string(),
@@ -174,12 +177,6 @@ impl LlmProvider for LlamaCppProvider {
     }
 
     fn build_command_line(&self, config: &ProviderConfig, settings: &ProviderSettings) -> String {
-        let mut cmd = String::new();
-
-        if let Some(gpu) = config.selected_gpu {
-            cmd.push_str(&format!("CUDA_VISIBLE_DEVICES={} ", gpu));
-        }
-
         let effective_gpu_layers = match config.cpu_offload {
             CpuOffloadMode::FullOffload => 0,
             CpuOffloadMode::Disabled => -1,
@@ -209,7 +206,6 @@ impl LlmProvider for LlamaCppProvider {
             &settings.binary_path
         };
 
-        // Determine HF repo ID: prefer explicit, then extract from path
         let effective_hf_id = if !config.huggingface_id.is_empty() {
             Some(config.huggingface_id.clone())
         } else if !config.model_path.is_empty() {
@@ -218,7 +214,6 @@ impl LlmProvider for LlamaCppProvider {
             None
         };
 
-        // Extract quantization from model path to append to HF ID
         let quant_suffix = if !config.model_path.is_empty() {
             let filename = std::path::Path::new(&config.model_path)
                 .file_name()
@@ -234,164 +229,48 @@ impl LlmProvider for LlamaCppProvider {
             String::new()
         };
 
-        if settings.env_script.is_empty() {
-            cmd.push_str(binary);
-            if let Some(hf_id) = effective_hf_id {
-                cmd.push_str(&format!(" -hf \"{}\"", hf_id + &quant_suffix));
-            } else {
-                cmd.push_str(&format!(" -m \"{}\"", config.model_path));
-            }
-            if config.context_size > 0 {
-                cmd.push_str(&format!(" -c {}", config.context_size));
-            }
-            if config.batch_size > 0 {
-                cmd.push_str(&format!(" -b {}", config.batch_size));
-            }
-            cmd.push_str(&format!(" -ngl {}", effective_gpu_layers));
-            if config.threads > 0 {
-                cmd.push_str(&format!(" -t {}", config.threads));
-            }
-            cmd.push_str(&format!(" --port {}", config.port));
-            cmd.push_str(&format!(" --host {}", config.host));
-            if config.num_prompt_tracking > 0 {
-                cmd.push_str(&format!(" -np {}", config.num_prompt_tracking));
-            }
+        let mut args: Vec<String> = Vec::new();
+        args.push(binary.to_string());
 
-            if !config.cache_type_k.is_empty() {
-                cmd.push_str(&format!(" --cache-type-k \"{}\"", config.cache_type_k));
-            }
-            if !config.cache_type_v.is_empty() {
-                cmd.push_str(&format!(" --cache-type-v \"{}\"", config.cache_type_v));
-            }
-
-            if let Some(temp) = config.temperature {
-                cmd.push_str(&format!(" --temperature {}", temp));
-            }
-            if let Some(top_k) = config.top_k {
-                cmd.push_str(&format!(" --top-k {}", top_k));
-            }
-            if let Some(top_p) = config.top_p {
-                cmd.push_str(&format!(" --top-p {}", top_p));
-            }
-            if let Some(min_p) = config.min_p {
-                cmd.push_str(&format!(" --min-p {}", min_p));
-            }
-            if let Some(presence_pen) = config.presence_penalty {
-                cmd.push_str(&format!(" --presence-penalty {}", presence_pen));
-            }
-            if let Some(repeat_pen) = config.repetition_penalty {
-                cmd.push_str(&format!(" --repeat-penalty {}", repeat_pen));
-            }
-        if let Some(enable_thinking) = config.enable_thinking {
-            if enable_thinking {
-                cmd.push_str(" --reasoning-format deepseek");
-            }
-        }
-
-        // Add mmproj flag for multimodal models
-        if !config.mmproj_path.is_empty() {
-            cmd.push_str(&format!(" --mmproj \"{}\"", config.mmproj_path));
-        }
-
-        for arg in config.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    cmd.push_str(&format!(" {}", arg));
-                }
-            }
-
-            for arg in settings.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    cmd.push_str(&format!(" {}", arg));
-                }
-            }
+        if let Some(hf_id) = effective_hf_id {
+            args.push(format!("-hf \"{}\"", hf_id + &quant_suffix));
         } else {
-            let mut inner = String::new();
-            inner.push_str(&format!("source \"{}\" && ", settings.env_script));
-            inner.push_str(&format!("\"{}\" ", binary));
-            if let Some(hf_id) = effective_hf_id {
-                inner.push_str(&format!("-hf \"{}\" ", hf_id + &quant_suffix));
-            } else {
-                inner.push_str(&format!("-m \"{}\" ", config.model_path));
-            }
-            if config.context_size > 0 {
-                inner.push_str(&format!("-c {} ", config.context_size));
-            }
-            if config.batch_size > 0 {
-                inner.push_str(&format!("-b {} ", config.batch_size));
-            }
-            inner.push_str(&format!("-ngl {} ", effective_gpu_layers));
-            if config.threads > 0 {
-                inner.push_str(&format!("-t {} ", config.threads));
-            }
-            inner.push_str(&format!("--port {} ", config.port));
-            inner.push_str(&format!("--host {} ", config.host));
-            if config.num_prompt_tracking > 0 {
-                inner.push_str(&format!("-np {} ", config.num_prompt_tracking));
-            }
-
-            if !config.cache_type_k.is_empty() {
-                inner.push_str(&format!("--cache-type-k \"{}\" ", config.cache_type_k));
-            }
-        if !config.cache_type_v.is_empty() {
-            inner.push_str(&format!("--cache-type-v \"{}\" ", config.cache_type_v));
+            args.push(format!("-m \"{}\"", config.model_path));
         }
+        if config.context_size > 0 { args.push(format!("-c {}", config.context_size)); }
+        if config.batch_size > 0 { args.push(format!("-b {}", config.batch_size)); }
+        args.push(format!("-ngl {}", effective_gpu_layers));
+        if config.threads > 0 { args.push(format!("-t {}", config.threads)); }
+        args.push(format!("--port {}", config.port));
+        args.push(format!("--host {}", config.host));
+        if config.num_prompt_tracking > 0 { args.push(format!("-np {}", config.num_prompt_tracking)); }
+        if !config.cache_type_k.is_empty() { args.push(format!("--cache-type-k \"{}\"", config.cache_type_k)); }
+        if !config.cache_type_v.is_empty() { args.push(format!("--cache-type-v \"{}\"", config.cache_type_v)); }
+        if let Some(temp) = config.temperature { args.push(format!("--temperature {}", temp)); }
+        if let Some(top_k) = config.top_k { args.push(format!("--top-k {}", top_k)); }
+        if let Some(top_p) = config.top_p { args.push(format!("--top-p {}", top_p)); }
+        if let Some(min_p) = config.min_p { args.push(format!("--min-p {}", min_p)); }
+        if let Some(presence_pen) = config.presence_penalty { args.push(format!("--presence-penalty {}", presence_pen)); }
+        if let Some(repeat_pen) = config.repetition_penalty { args.push(format!("--repeat-penalty {}", repeat_pen)); }
+        if config.enable_thinking == Some(true) { args.push("--reasoning-format deepseek".to_string()); }
+        if !config.mmproj_path.is_empty() { args.push(format!("--mmproj \"{}\"", config.mmproj_path)); }
+        for arg in config.additional_args.split_whitespace() { if !arg.is_empty() { args.push(arg.to_string()); } }
+        for arg in settings.additional_args.split_whitespace() { if !arg.is_empty() { args.push(arg.to_string()); } }
 
-        // Add mmproj flag for multimodal models
-        if !config.mmproj_path.is_empty() {
-            inner.push_str(&format!("--mmproj \"{}\" ", config.mmproj_path));
+        let inner = args.join(" ");
+        if settings.env_script.is_empty() {
+            inner
+        } else {
+            format!("bash -c 'source \"{}\" && {}'", settings.env_script, inner)
         }
-
-        for arg in config.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    inner.push_str(&format!("{} ", arg));
-                }
-            }
-
-            for arg in settings.additional_args.split_whitespace() {
-                if !arg.is_empty() {
-                    inner.push_str(&format!("{} ", arg));
-                }
-            }
-
-            cmd.push_str(&format!("bash -c '{}'", inner));
-        }
-
-        cmd
     }
 
     fn scan_models(&self, path: &str) -> Vec<ModelInfo> {
         let mut models = Vec::new();
         let path_obj = std::path::Path::new(path);
-
-        if !path_obj.exists() {
-            return models;
+        if path_obj.exists() {
+            scan_recursive(path_obj, &mut models);
         }
-
-fn scan_recursive(dir: &std::path::Path, models: &mut Vec<ModelInfo>) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                scan_recursive(&path, models);
-            } else if let Some(ext) = path.extension() {
-                if ext.to_string_lossy().to_lowercase() == "gguf" {
-                    // Skip mmproj files - they are vision adapters, not standalone models
-                    if let Some(file_name) = path.file_name() {
-                        let name_lower = file_name.to_string_lossy().to_lowercase();
-                        if name_lower.starts_with("mmproj") {
-                            continue;
-                        }
-                    }
-                    if let Some(model) = parse_gguf_file(&path) {
-                        models.push(model);
-                    }
-                }
-            }
-        }
-    }
-}
-
-        scan_recursive(path_obj, &mut models);
         models
     }
 
@@ -691,6 +570,29 @@ fn scan_recursive(dir: &std::path::Path, models: &mut Vec<ModelInfo>) {
         }
 
         config
+    }
+}
+
+fn scan_recursive(dir: &std::path::Path, models: &mut Vec<ModelInfo>) {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                scan_recursive(&path, models);
+            } else if let Some(ext) = path.extension() {
+                if ext.to_string_lossy().to_lowercase() == "gguf" {
+                    if let Some(file_name) = path.file_name() {
+                        let name_lower = file_name.to_string_lossy().to_lowercase();
+                        if name_lower.starts_with("mmproj") {
+                            continue;
+                        }
+                    }
+                    if let Some(model) = parse_gguf_file(&path) {
+                        models.push(model);
+                    }
+                }
+            }
+        }
     }
 }
 

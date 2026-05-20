@@ -4,31 +4,24 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-fn get_config_path() -> PathBuf {
-    let config_dir = dirs::config_dir()
+fn config_dir() -> PathBuf {
+    let dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("lllmman");
+    fs::create_dir_all(&dir).ok();
+    dir
+}
 
-    fs::create_dir_all(&config_dir).ok();
-    config_dir.join("config.json")
+fn get_config_path() -> PathBuf {
+    config_dir().join("config.json")
 }
 
 fn get_model_configs_path() -> PathBuf {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("lllmman");
-
-    fs::create_dir_all(&config_dir).ok();
-    config_dir.join("model_configs.json")
+    config_dir().join("model_configs.json")
 }
 
 fn get_provider_settings_path() -> PathBuf {
-    let config_dir = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("lllmman");
-
-    fs::create_dir_all(&config_dir).ok();
-    config_dir.join("provider_settings.json")
+    config_dir().join("provider_settings.json")
 }
 
 pub fn load_settings() -> AppSettings {

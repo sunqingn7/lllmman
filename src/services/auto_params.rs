@@ -194,6 +194,13 @@ impl VllmSmartConfig {
             }
         }
 
+        args.push(format!("--gpu-memory-utilization {:.2}", self.gpu_memory_utilization));
+        args.push(format!("--max-num-seqs {}", self.max_num_seqs));
+        if self.max_num_batched_tokens > 0 {
+            args.push(format!("--max-num-batched-tokens {}", self.max_num_batched_tokens));
+        }
+        args.push(format!("--swap-space {}", self.swap_space));
+
         args.join(" ")
     }
 }
