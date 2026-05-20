@@ -351,7 +351,7 @@ impl LlmProvider for VllmProvider {
             return Err(ProviderError::InvalidConfig("Model ID is required".into()));
         }
 
-        let name = path.split('/').last().unwrap_or(path).to_string();
+        let name = path.split('/').next_back().unwrap_or(path).to_string();
 
         // Try to get size from local cache if model exists there
         let size_gb = if Path::new(path).exists() {

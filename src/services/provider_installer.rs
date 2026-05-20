@@ -3,6 +3,9 @@ use std::process::Command;
 
 use crate::services::config_persistence::load_provider_settings_for;
 
+/// Return type for provider installation plan: (mode, commands, env vars, warnings, notes, summary)
+pub type InstallPlan = (InstallMode, Vec<SetupCommand>, Vec<(String, String)>, Vec<String>, Vec<String>, String);
+
 pub struct ProviderInstallInfo {
     pub provider_name: &'static str,
     pub simple_command: &'static str,
@@ -182,7 +185,7 @@ pub fn generate_setup_plan(
 fn generate_vllm_plan(
     gpu_archs: &[crate::services::GpuArchInfo],
     is_heterogeneous: bool,
-) -> (InstallMode, Vec<SetupCommand>, Vec<(String, String)>, Vec<String>, Vec<String>, String) {
+) -> InstallPlan {
     let has_uv = Command::new("uv").arg("--version").output().is_ok();
     let pip_cmd = if has_uv { "uv pip" } else { "pip" };
 
@@ -254,7 +257,7 @@ fn generate_vllm_plan(
 fn generate_sglang_plan(
     gpu_archs: &[crate::services::GpuArchInfo],
     is_heterogeneous: bool,
-) -> (InstallMode, Vec<SetupCommand>, Vec<(String, String)>, Vec<String>, Vec<String>, String) {
+) -> InstallPlan {
     let has_uv = Command::new("uv").arg("--version").output().is_ok();
     let pip_cmd = if has_uv { "uv pip" } else { "pip" };
 
@@ -323,7 +326,7 @@ fn generate_sglang_plan(
     }
 }
 
-fn generate_llamacpp_plan() -> (InstallMode, Vec<SetupCommand>, Vec<(String, String)>, Vec<String>, Vec<String>, String) {
+fn generate_llamacpp_plan() -> InstallPlan {
     let commands = vec![
         SetupCommand {
             description: "Install llama-cpp-python via pip".to_string(),

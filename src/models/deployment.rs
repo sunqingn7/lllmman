@@ -177,7 +177,7 @@ pub fn generate_default_profile(
                     gpu_indices: vec![i],
                     port: 8080 + i as u16,
                     memory_utilization: mem_util.max(0.70),
-                    max_num_seqs: Some(if i == 0 { 256 } else { 128 - (i as u32 * 32) }),
+                    max_num_seqs: Some(if i == 0 { 256 } else { 128 - (i * 32) }),
                     model_path: model_path.to_string(),
                     context_size: 4096,
                     provider: provider.to_string(),

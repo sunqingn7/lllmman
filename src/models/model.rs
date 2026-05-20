@@ -8,18 +8,15 @@ pub enum ModelSource {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum ModelType {
+    #[default]
     TextOnly,
     Tooling,
     Vision,
     Multimodal,
 }
 
-impl Default for ModelType {
-    fn default() -> Self {
-        ModelType::TextOnly
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Model {

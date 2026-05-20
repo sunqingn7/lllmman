@@ -120,7 +120,7 @@ impl MetricsCollector {
                 for usage in get_all_gpu_usage() {
                     snap.gpu_temps.push(GpuTempSnapshot {
                         index: usage.index,
-                        temperature_c: usage.temperature_c.unwrap_or(0.0) as f32,
+                        temperature_c: usage.temperature_c.unwrap_or(0.0),
                         utilization: 0.0, // Would need nvidia-smi --query-gpu=utilization.gpu
                     });
                 }

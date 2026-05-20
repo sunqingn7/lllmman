@@ -168,10 +168,8 @@ impl RecommendationEngine {
                 recs.push(Recommendation {
                     category: RecommendationCategory::Router,
                     title: "Power-of-Two routing for mixed-tier setups".to_string(),
-                    description: format!(
-                        "With mixed GPU tiers (Low + higher), Power-of-Two routing picks the best \
-                         of 2 random workers, balancing load while avoiding the slowest GPU."
-                    ),
+                    description: "With mixed GPU tiers (Low + higher), Power-of-Two routing picks the best \
+                         of 2 random workers, balancing load while avoiding the slowest GPU.".to_string(),
                     priority: RecommendationPriority::Medium,
                     action: Some("Set router_policy=power_of_two".to_string()),
                 });

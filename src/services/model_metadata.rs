@@ -172,7 +172,7 @@ fn extract_gguf_metadata(path: &str) -> Option<ModelMetadata> {
             }
         }
 
-        skip_value(&mmap, val_type as u32, &mut offset);
+        skip_value(&mmap, val_type, &mut offset);
     }
 
     Some(ModelMetadata {
@@ -200,7 +200,7 @@ fn skip_value(data: &[u8], val_type: u32, offset: &mut usize) {
         2 | 3 => {
             *offset += 2;
         }
-        4 | 5 | 6 => {
+        4..=6 => {
             *offset += 4;
         }
         7 => {
@@ -249,7 +249,7 @@ fn skip_value(data: &[u8], val_type: u32, offset: &mut usize) {
                     2 | 3 => {
                         *offset += arr_count * 2;
                     }
-                    4 | 5 | 6 => {
+                    4..=6 => {
                         *offset += arr_count * 4;
                     }
                     7 => {
@@ -277,7 +277,7 @@ fn skip_value(data: &[u8], val_type: u32, offset: &mut usize) {
                 }
             }
         }
-        10 | 11 | 12 => {
+        10..=12 => {
             *offset += 8;
         }
         _ => {}

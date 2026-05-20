@@ -114,7 +114,7 @@ fn check_driver_compatibility(report: &mut CudaCompatibilityReport, arch_infos: 
         if let Some((major, minor)) = arch.compute_capability {
             let required_driver = min_driver_for_sm(major, minor);
             if let Some(required) = required_driver {
-                if compare_driver_versions(driver_ver, &required) < 0 {
+                if compare_driver_versions(driver_ver, required) < 0 {
                     report.issues.push(format!(
                         "CUDA driver {} is too old for {} (SM {}.{}). Upgrade to driver {}+.",
                         driver_ver, arch.name, major, minor, required

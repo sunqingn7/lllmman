@@ -5,9 +5,11 @@ use serde::{Deserialize, Serialize};
 use crate::models::deployment::DeploymentMode;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum GpuAllocation {
     Single(u32),
     Multi(Vec<u32>),
+    #[default]
     All,
     VramLimit {
         gpu: u32,
@@ -16,11 +18,6 @@ pub enum GpuAllocation {
     },
 }
 
-impl Default for GpuAllocation {
-    fn default() -> Self {
-        GpuAllocation::All
-    }
-}
 
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct MonitorStats {

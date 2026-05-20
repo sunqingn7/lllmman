@@ -37,9 +37,7 @@ pub fn find_mmproj_for_model(model_path: &str) -> Option<String> {
     let model_file_name = path.file_name()?.to_string_lossy();
 
     // Check if model file name suggests it's a vision/multimodal model
-    let model_stem = model_file_name
-        .rsplitn(2, '.')
-        .nth(1)
+    let model_stem = model_file_name.rsplit_once('.').map(|x| x.0)
         .unwrap_or(&model_file_name);
 
     // Try to find mmproj file in the same directory
@@ -733,7 +731,7 @@ fn extract_model_name_from_path(path: &std::path::Path, filename: &str) -> Strin
     }
 
     // Fallback: use filename without extension
-    if let Some(stem) = filename.rsplitn(2, '.').nth(1) {
+    if let Some(stem) = filename.rsplit_once('.').map(|x| x.0) {
         stem.to_string()
     } else {
         filename.to_string()

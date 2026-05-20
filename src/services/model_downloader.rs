@@ -21,7 +21,7 @@ impl DownloadManager {
 
     pub async fn add_task(&self, source: ModelSource, file_name: String) -> String {
         let id = Uuid::new_v4().to_string();
-        let file_name_clean = file_name.split('/').last().unwrap_or(&file_name).to_string();
+        let file_name_clean = file_name.split('/').next_back().unwrap_or(&file_name).to_string();
         let dest_path = std::path::PathBuf::from(&self.download_dir).join(&file_name_clean);
 
         if let Some(parent) = dest_path.parent() {
@@ -47,7 +47,7 @@ impl DownloadManager {
 
     pub fn add_task_sync(&self, source: ModelSource, file_name: String) -> String {
         let id = Uuid::new_v4().to_string();
-        let file_name_clean = file_name.split('/').last().unwrap_or(&file_name).to_string();
+        let file_name_clean = file_name.split('/').next_back().unwrap_or(&file_name).to_string();
         let dest_path = std::path::PathBuf::from(&self.download_dir).join(&file_name_clean);
 
         if let Some(parent) = dest_path.parent() {

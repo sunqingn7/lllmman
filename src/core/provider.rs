@@ -118,18 +118,15 @@ impl Default for ProviderSettings {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Default)]
 pub enum CpuOffloadMode {
+    #[default]
     Auto,
     Offload,
     FullOffload,
     Disabled,
 }
 
-impl Default for CpuOffloadMode {
-    fn default() -> Self {
-        CpuOffloadMode::Auto
-    }
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -318,11 +315,13 @@ pub trait LlmProvider: Send + Sync {
         settings: &ProviderSettings,
     ) -> String {
         // Default implementation: convert InstanceConfig to ProviderConfig and use build_command_line
-        let mut provider_config = ProviderConfig::default();
-        provider_config.model_path = config.model_path.clone();
-        provider_config.port = config.port;
-        provider_config.context_size = config.context_size;
-        provider_config.host = "0.0.0.0".to_string();
+        let mut provider_config = ProviderConfig {
+            model_path: config.model_path.clone(),
+            port: config.port,
+            context_size: config.context_size,
+            host: "0.0.0.0".to_string(),
+            ..Default::default()
+        };
         if let Some(gpu) = config.gpu_indices.first() {
             provider_config.selected_gpu = Some(*gpu);
         }

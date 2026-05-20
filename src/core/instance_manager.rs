@@ -112,7 +112,7 @@ impl InstanceManager {
             let reader = BufReader::new(stdout);
             let log = log_buf.clone();
             std::thread::spawn(move || {
-                for line in reader.lines().flatten() {
+                for line in reader.lines().filter_map(|r| r.ok()) {
                     log.push_info(line);
                 }
             });
@@ -123,7 +123,7 @@ impl InstanceManager {
         if let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
             std::thread::spawn(move || {
-                for line in reader.lines().flatten() {
+                for line in reader.lines().filter_map(|r| r.ok()) {
                     let lower = line.to_lowercase();
                     let is_real_error = lower.contains("error:")
                         || (lower.contains("failed") && lower.contains("abort"))
@@ -218,7 +218,7 @@ impl InstanceManager {
             let reader = BufReader::new(stdout);
             let log = log_buf.clone();
             std::thread::spawn(move || {
-                for line in reader.lines().flatten() {
+                for line in reader.lines().filter_map(|r| r.ok()) {
                     log.push_info(line);
                 }
             });
@@ -228,7 +228,7 @@ impl InstanceManager {
         if let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
             std::thread::spawn(move || {
-                for line in reader.lines().flatten() {
+                for line in reader.lines().filter_map(|r| r.ok()) {
                     let lower = line.to_lowercase();
                     if lower.contains("error") {
                         log_buf.push_error(line);
@@ -343,7 +343,7 @@ impl InstanceManager {
     pub fn is_any_running(&self) -> bool {
         let instances_running = self.instances.iter().any(|i| self.is_instance_running(i.id));
 
-        let router_running = self.router.as_ref().map_or(false, |r| {
+        let router_running = self.router.as_ref().is_some_and(|r| {
             let mut process_guard = r.process.lock().unwrap();
             if let Some(p) = process_guard.as_mut() {
                 matches!(p.try_wait(), Ok(None))

@@ -17,7 +17,7 @@ fn estimate_vram_with_context(model_size_gb: f32, context_size: u32) -> u32 {
     }
     let base = (model_size_gb * 1024.0) as u32;
     // KV cache: ~2 bytes per token per layer per context, estimate ~1MB per 1024 context for 32-layer model
-    let kv_cache_mb = (context_size as u32 * 2) / 1024;
+    let kv_cache_mb = (context_size * 2) / 1024;
     base + kv_cache_mb + (base / 5) // base + kv cache + 20% overhead
 }
 
@@ -225,11 +225,10 @@ pub fn apply_vllm_smart_config(
         server_config.threads = smart.max_num_seqs;
     }
 
-    if server_config.batch_size == 0 || server_config.batch_size == 512 {
-        if smart.max_num_batched_tokens > 0 {
+    if (server_config.batch_size == 0 || server_config.batch_size == 512)
+        && smart.max_num_batched_tokens > 0 {
             server_config.batch_size = smart.max_num_batched_tokens;
         }
-    }
 
     let extra_args = smart.to_additional_args();
     if !extra_args.is_empty() && server_config.additional_args.is_empty() {
@@ -343,6 +342,7 @@ fn estimate_hidden_size(model_size_gb: f32) -> u32 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn calculate_dense_config(
     config: &mut VllmSmartConfig,
     _model_size_gb: f32,
@@ -378,7 +378,7 @@ fn calculate_dense_config(
         config.gpu_memory_utilization = 0.9;
     }
 
-    if num_gpus > 1 && num_gpus % 2 != 0 {
+    if num_gpus > 1 && !num_gpus.is_multiple_of(2) {
         config.pipeline_parallel_size = num_gpus;
         config.tensor_parallel_size = 1;
     }
@@ -388,6 +388,7 @@ fn calculate_dense_config(
     config.swap_space = calculate_swap_space(total_ram_mb, total_vram_mb, total_needed_mb);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn calculate_moe_config(
     config: &mut VllmSmartConfig,
     _model_size_gb: f32,

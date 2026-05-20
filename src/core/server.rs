@@ -17,6 +17,12 @@ pub struct ServerController {
     log_buffer: LogBuffer,
 }
 
+impl Default for ServerController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServerController {
     pub fn new() -> Self {
         Self {
@@ -101,7 +107,7 @@ impl ServerController {
             let reader = BufReader::new(stdout);
             let log_buf = log_buffer.clone();
             std::thread::spawn(move || {
-                for line in reader.lines().flatten() {
+                for line in reader.lines().filter_map(|r| r.ok()) {
                     log_buf.push_info(line);
                 }
             });
@@ -111,7 +117,7 @@ impl ServerController {
         if let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
             std::thread::spawn(move || {
-                for line in reader.lines().flatten() {
+                for line in reader.lines().filter_map(|r| r.ok()) {
                     let lower = line.to_lowercase();
                     let is_real_error = lower.contains("error:")
                         || (lower.contains("failed") && lower.contains("abort"))
@@ -242,15 +248,14 @@ impl ServerController {
             guard.clone()
         };
 
-        if matches!(stored_status, ServerStatus::Running) {
-            if !self.is_running() {
+        if matches!(stored_status, ServerStatus::Running)
+            && !self.is_running() {
                 if self.external_pid.is_some() {
                     self.external_pid = None;
                     self.external_cmd = None;
                 }
                 return ServerStatus::Error("Server crashed".into());
             }
-        }
 
         stored_status
     }

@@ -168,7 +168,7 @@ fn get_gpu_usage_for_gpu(gpu: &GpuInfo) -> Option<GpuUsage> {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                        if let Some(card) = json.get(&gpu.index.to_string()) {
+                        if let Some(card) = json.get(gpu.index.to_string()) {
                             if let (Some(total), Some(used_pct)) = (
                                 card.get("VRAM (total memory)").and_then(|v| v.as_f64()),
                                 card.get("VRAM %").and_then(|v| v.as_f64()),
@@ -218,7 +218,7 @@ pub fn get_gpu_usage(index: u32) -> Result<GpuUsage, String> {
 pub fn get_all_gpu_usage() -> Vec<GpuUsage> {
     detect_gpus()
         .iter()
-        .filter_map(|gpu| get_gpu_usage_for_gpu(gpu))
+        .filter_map(get_gpu_usage_for_gpu)
         .collect()
 }
 
@@ -248,7 +248,7 @@ fn get_gpu_temperature_amd(index: u32) -> Option<u32> {
         if output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&stdout) {
-                if let Some(card) = json.get(&index.to_string()).or_else(|| json.get("card0")) {
+                if let Some(card) = json.get(index.to_string()).or_else(|| json.get("card0")) {
                     if let Some(temp) = card.get("temperature").and_then(|v| v.as_f64()) {
                         return Some(temp as u32);
                     }
