@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::core::{ProviderConfig, ProviderRegistry};
 
 pub struct DetectedServer {
@@ -9,16 +11,19 @@ pub struct DetectedServer {
 
 pub fn detect_running_servers() -> Vec<DetectedServer> {
     let mut servers = Vec::new();
+    let mut seen_pids = HashSet::new();
 
     for (id, _name) in ProviderRegistry::list() {
         if let Some(provider) = ProviderRegistry::get(id) {
             for server in provider.detect_running_servers() {
-                servers.push(DetectedServer {
-                    pid: server.pid,
-                    binary: server.binary.clone(),
-                    command_line: server.command_line.clone(),
-                    provider_id: id.to_string(),
-                });
+                if seen_pids.insert(server.pid) {
+                    servers.push(DetectedServer {
+                        pid: server.pid,
+                        binary: server.binary.clone(),
+                        command_line: server.command_line.clone(),
+                        provider_id: id.to_string(),
+                    });
+                }
             }
         }
     }

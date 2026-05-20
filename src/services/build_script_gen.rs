@@ -147,11 +147,13 @@ fn generate_multi_instance_section(script: &mut String, profile: &DeploymentProf
                 writeln!(script, "  --host 0.0.0.0 &").unwrap();
             }
             "sglang" => {
-                let disable_cuda_graph = if is_heterogeneous { " --disable-cuda-graph" } else { "" };
                 writeln!(script, "CUDA_VISIBLE_DEVICES={} python -m sglang.launch_server \\", gpu_idx).unwrap();
                 writeln!(script, "  --model-path {} \\", instance.model_path).unwrap();
                 writeln!(script, "  --port {} \\", instance.port).unwrap();
-                writeln!(script, "  --mem-fraction-static {}{} \\", instance.memory_utilization, disable_cuda_graph).unwrap();
+                writeln!(script, "  --mem-fraction-static {} \\", instance.memory_utilization).unwrap();
+                if is_heterogeneous {
+                    writeln!(script, "  --disable-cuda-graph \\").unwrap();
+                }
                 writeln!(script, "  --host 0.0.0.0 &").unwrap();
             }
             "llama.cpp" => {
@@ -187,7 +189,7 @@ fn generate_router_section(script: &mut String, profile: &DeploymentProfile) {
                 writeln!(script, "  --worker-urls {} \\", worker_urls).unwrap();
                 writeln!(script, "  --port {} \\", router.router_port).unwrap();
                 writeln!(script, "  --host 0.0.0.0 \\",).unwrap();
-                writeln!(script, "  --policy {:?} &", router.policy).unwrap();
+                writeln!(script, "  --policy {} &", router.policy.to_cli_arg()).unwrap();
             }
             RouterProvider::Nginx => {
                 writeln!(script, "# Nginx router configuration not auto-generated.").unwrap();

@@ -92,11 +92,15 @@ pub fn detect_gpu_architectures(gpus: &[GpuInfo]) -> Vec<GpuArchInfo> {
     arch_infos
 }
 
-/// Query nvidia-smi for compute capability of all NVIDIA GPUs.
-fn query_nvidia_compute_caps(_gpus: &[&GpuInfo]) -> Option<Vec<Option<(u32, u32)>>> {
+/// Query nvidia-smi for compute capability of specific NVIDIA GPUs by index.
+fn query_nvidia_compute_caps(gpus: &[&GpuInfo]) -> Option<Vec<Option<(u32, u32)>>> {
+    let ids: Vec<String> = gpus.iter().map(|g| g.index.to_string()).collect();
+    let id_list = ids.join(",");
+
     let output = Command::new("nvidia-smi")
         .args([
-            "--query-gpu=compute_cap",
+            "--query-gpu=index,compute_cap",
+            &format!("--id={}", id_list),
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -107,26 +111,31 @@ fn query_nvidia_compute_caps(_gpus: &[&GpuInfo]) -> Option<Vec<Option<(u32, u32)
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let caps: Vec<Option<(u32, u32)>> = stdout
-        .lines()
-        .map(|line| {
-            let parts: Vec<&str> = line.split('.').collect();
-            if parts.len() == 2 {
-                if let (Ok(major), Ok(minor)) = (parts[0].trim().parse::<u32>(), parts[1].trim().parse::<u32>()) {
+    let mut caps = std::collections::HashMap::new();
+    for line in stdout.lines() {
+        let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
+        if parts.len() == 2 {
+            if let (Ok(idx), cap_str) = (parts[0].parse::<u32>(), parts[1]) {
+                let cap = if let Some(dot_pos) = cap_str.find('.') {
+                    let major = cap_str[..dot_pos].trim().parse::<u32>().ok()?;
+                    let minor = cap_str[dot_pos + 1..].trim().parse::<u32>().ok()?;
                     Some((major, minor))
                 } else {
                     None
-                }
-            } else {
-                None
+                };
+                caps.insert(idx, cap);
             }
-        })
+        }
+    }
+
+    let result: Vec<Option<(u32, u32)>> = gpus.iter()
+        .map(|g| caps.get(&g.index).copied().unwrap_or(None))
         .collect();
 
     if caps.is_empty() {
         None
     } else {
-        Some(caps)
+        Some(result)
     }
 }
 

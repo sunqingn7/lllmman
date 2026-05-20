@@ -61,6 +61,17 @@ pub enum RouterPolicy {
     Random,
 }
 
+impl RouterPolicy {
+    pub fn to_cli_arg(&self) -> &'static str {
+        match self {
+            RouterPolicy::CacheAware => "cache_aware",
+            RouterPolicy::RoundRobin => "round_robin",
+            RouterPolicy::PowerOfTwo => "power_of_two",
+            RouterPolicy::Random => "random",
+        }
+    }
+}
+
 /// Configuration for a single server instance.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct InstanceConfig {

@@ -1,6 +1,7 @@
 use crate::models::{GpuTemperature, MonitorStats};
 use crate::providers::llama_cpp::read_gguf_n_layer;
 use crate::services::gpu_detector;
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 fn get_sys() -> Arc<Mutex<sysinfo::System>> {
@@ -15,7 +16,7 @@ pub fn get_system_stats() -> MonitorStats {
         let mut sys_guard = sys.lock().unwrap();
         sys_guard.refresh_all();
     }
-    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::thread::sleep(std::time::Duration::from_millis(500));
     {
         let mut sys_guard = sys.lock().unwrap();
         sys_guard.refresh_all();
@@ -33,18 +34,22 @@ pub fn get_system_stats() -> MonitorStats {
 
     let gpus = gpu_detector::detect_gpus();
     let gpu_usage = gpu_detector::get_all_gpu_usage();
-    let (vram_used, vram_total) = if !gpu_usage.is_empty() {
-        let total: u32 = gpus.iter().map(|g| g.total_vram_mb).sum();
-        let used: u32 = gpu_usage.iter().map(|u| u.used_vram_mb).sum();
-        (used, total)
-    } else {
-        (0, 0)
-    };
+
+    // Build index-based lookup for usage data
+    let usage_by_index: HashMap<u32, u32> = gpu_usage
+        .iter()
+        .map(|u| (u.index, u.used_vram_mb))
+        .collect();
+
+    let total_vram: u32 = gpus.iter().map(|g| g.total_vram_mb).sum();
+    let used_vram: u32 = gpu_usage.iter().map(|u| u.used_vram_mb).sum();
 
     let gpu_vram_usage: Vec<(u32, u32, u32)> = gpus
         .iter()
-        .zip(gpu_usage.iter())
-        .map(|(gpu, usage)| (gpu.index, usage.used_vram_mb, gpu.total_vram_mb))
+        .map(|gpu| {
+            let used = usage_by_index.get(&gpu.index).copied().unwrap_or(0);
+            (gpu.index, used, gpu.total_vram_mb)
+        })
         .collect();
 
     let gpu_temperatures: Vec<GpuTemperature> = gpus
@@ -59,8 +64,8 @@ pub fn get_system_stats() -> MonitorStats {
     let cpu_temperature = gpu_detector::get_cpu_temperature();
 
     MonitorStats {
-        vram_used_mb: vram_used,
-        vram_total_mb: vram_total,
+        vram_used_mb: used_vram,
+        vram_total_mb: total_vram,
         ram_used_mb: (used_ram / (1024 * 1024)) as u32,
         ram_total_mb: (total_ram / (1024 * 1024)) as u32,
         cpu_percent: cpu,
@@ -87,24 +92,25 @@ pub struct ServerStats {
     pub tokens_generated: Option<u64>,
 }
 
+fn http_get_with_timeout(url: &str, timeout_secs: u64) -> Option<reqwest::blocking::Response> {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .ok()?
+        .get(url)
+        .send()
+        .ok()
+        .filter(|r| r.status().is_success())
+}
+
 pub fn fetch_server_stats(host: &str, port: u16, health_endpoint: &str) -> Option<ServerStats> {
-    let url = format!("http://{}:{}/stats", host, port);
-
     let check_url = format!("http://{}:{}{}", host, port, health_endpoint);
-    if let Ok(response) = reqwest::blocking::get(&check_url) {
-        if !response.status().is_success() {
-            return None;
-        }
+    if let Some(_resp) = http_get_with_timeout(&check_url, 5) {
+        let url = format!("http://{}:{}/stats", host, port);
+        http_get_with_timeout(&url, 5)?.json::<ServerStats>().ok()
     } else {
-        return None;
+        None
     }
-
-    let response = reqwest::blocking::get(&url).ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-
-    response.json::<ServerStats>().ok()
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -114,10 +120,7 @@ pub struct ServerProps {
 
 pub fn get_server_model_path(host: &str, port: u16) -> Option<String> {
     let url = format!("http://{}:{}/props", host, port);
-    let response = reqwest::blocking::get(&url).ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
+    let response = http_get_with_timeout(&url, 5)?;
     let props: ServerProps = response.json().ok()?;
     props.model_path
 }
@@ -130,8 +133,11 @@ pub fn get_actual_gpu_layers(host: &str, port: u16, requested_layers: i32) -> i3
 
     // If -1, try to get actual layer count from GGUF
     if let Some(model_path) = get_server_model_path(host, port) {
-        if let Some(n_layer) = read_gguf_n_layer(&model_path) {
-            return n_layer as i32;
+        // Only try to read GGUF if path looks like a file
+        if std::path::Path::new(&model_path).is_file() {
+            if let Some(n_layer) = read_gguf_n_layer(&model_path) {
+                return n_layer as i32;
+            }
         }
     }
 

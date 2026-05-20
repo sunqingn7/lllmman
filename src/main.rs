@@ -11,12 +11,7 @@ fn main() {
     env_logger::init();
     providers::register_all_providers();
     
-    // TUI takes priority when explicitly requested with --features tui
-    #[cfg(all(feature = "gui", feature = "tui"))]
-    {
-        tui::run().expect("TUI error");
-    }
-    
+    // GUI takes priority when both features are enabled
     #[cfg(all(feature = "gui", not(feature = "tui")))]
     {
         gui::run();
@@ -27,10 +22,14 @@ fn main() {
         tui::run().expect("TUI error");
     }
     
+    // When both gui and tui are enabled, prefer GUI
+    #[cfg(all(feature = "gui", feature = "tui"))]
+    {
+        gui::run();
+    }
+    
     #[cfg(not(any(feature = "gui", feature = "tui")))]
     {
         eprintln!("Please compile with --features gui or --features tui");
-        eprintln!("  cargo run --features gui   # for GUI");
-        eprintln!("  cargo run --features tui   # for TUI");
     }
 }
