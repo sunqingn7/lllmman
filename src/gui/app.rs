@@ -85,7 +85,8 @@ use crate::services::{
     save_model_config, save_provider_settings_for, DirectUrlDownloader, DownloadManager,
     GitHubReleaseDownloader, HuggingFaceDownloader,
 };
-use crate::gui::gpu_topology_panel::{GpuTopologyEntry, GpuTopologyPanel, GpuTier};
+use crate::gui::gpu_topology_panel::{GpuTopologyEntry, GpuTopologyPanel};
+use crate::models::gpu::GpuTier;
 use crate::gui::instance_manager_panel::MultiInstanceManagerPanel;
 use crate::gui::deployment_wizard::DeploymentWizard;
 use crate::gui::performance_monitor_panel::PerformanceMonitorPanel;

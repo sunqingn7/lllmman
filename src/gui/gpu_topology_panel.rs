@@ -1,4 +1,14 @@
 use eframe::egui::{Color32, FontId, Frame, Margin, Rect, Sense, Stroke, Ui, Vec2, Align2, RichText};
+use crate::models::gpu::GpuTier;
+
+fn tier_color(tier: &GpuTier) -> Color32 {
+    match tier {
+        GpuTier::Low => Color32::from_rgb(180, 180, 180),
+        GpuTier::Mid => Color32::from_rgb(80, 160, 220),
+        GpuTier::High => Color32::from_rgb(80, 200, 120),
+        GpuTier::Ultra => Color32::from_rgb(220, 180, 60),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct GpuTopologyEntry {
@@ -14,34 +24,6 @@ pub struct GpuTopologyEntry {
     pub power_watts: f32,
     pub power_limit_watts: f32,
     pub tier: GpuTier,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum GpuTier {
-    Low,
-    Mid,
-    High,
-    Ultra,
-}
-
-impl GpuTier {
-    pub fn label(&self) -> &'static str {
-        match self {
-            GpuTier::Low => "Low",
-            GpuTier::Mid => "Mid",
-            GpuTier::High => "High",
-            GpuTier::Ultra => "Ultra",
-        }
-    }
-
-    pub fn color(&self) -> Color32 {
-        match self {
-            GpuTier::Low => Color32::from_rgb(180, 180, 180),
-            GpuTier::Mid => Color32::from_rgb(80, 160, 220),
-            GpuTier::High => Color32::from_rgb(80, 200, 120),
-            GpuTier::Ultra => Color32::from_rgb(220, 180, 60),
-        }
-    }
 }
 
 pub struct GpuTopologyPanel {
@@ -147,19 +129,19 @@ impl GpuTopologyPanel {
         );
 
         // Tier badge
-        let tier_color = gpu.tier.color();
+        let tc = tier_color(&gpu.tier);
         let badge_rect = Rect::from_min_size(
             min + Vec2::new(response.rect.width() - 60.0, 4.0),
             Vec2::new(50.0, 16.0),
         );
-        painter.rect_filled(badge_rect, 4.0, tier_color.linear_multiply(0.2));
-        painter.rect_stroke(badge_rect, 4.0, Stroke::new(1.0, tier_color));
+        painter.rect_filled(badge_rect, 4.0, tc.linear_multiply(0.2));
+        painter.rect_stroke(badge_rect, 4.0, Stroke::new(1.0, tc));
         painter.text(
             badge_rect.center(),
             Align2::CENTER_CENTER,
             gpu.tier.label(),
             FontId::new(9.0, FontId::monospace(9.0).family),
-            tier_color,
+            tc,
         );
 
         // Arch info line

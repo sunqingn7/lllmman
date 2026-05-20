@@ -1,5 +1,6 @@
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::core::LogBuffer;
@@ -40,6 +41,7 @@ pub struct InstanceHandle {
     pub process: Arc<Mutex<Option<Child>>>,
     pub log_buffer: LogBuffer,
     pub port: u16,
+    pub stop_flag: Arc<AtomicBool>,
 }
 
 /// A handle to the router process.
@@ -153,25 +155,41 @@ impl InstanceManager {
             process: Arc::new(Mutex::new(Some(child))),
             log_buffer: log_buffer.clone(),
             port: config.port,
+            stop_flag: Arc::new(AtomicBool::new(false)),
         };
+
+        let status_clone = handle.status.clone();
+        let log_buf = handle.log_buffer.clone();
+        let instance_id = id;
+        let instance_port = config.port;
 
         self.instances.push(handle);
 
-        // Wait for instance to start
-        let start_time = std::time::Instant::now();
-        let timeout = std::time::Duration::from_secs(15);
-
-        while start_time.elapsed() < timeout {
-            if self.is_instance_running(id) {
-                *self.instances.last_mut().unwrap().status.lock().unwrap() = InstanceStatus::Running;
-                return Ok(id);
+        // Spawn background thread for start health-check (non-blocking for UI)
+        std::thread::spawn(move || {
+            let start_time = std::time::Instant::now();
+            let timeout = std::time::Duration::from_secs(15);
+            while start_time.elapsed() < timeout {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                // Check HTTP endpoint as health signal
+                let url = format!("http://127.0.0.1:{}/health", instance_port);
+                if reqwest::blocking::Client::new()
+                    .get(&url)
+                    .timeout(std::time::Duration::from_secs(1))
+                    .send()
+                    .map(|r| r.status().is_success())
+                    .unwrap_or(false)
+                {
+                    *status_clone.lock().unwrap() = InstanceStatus::Running;
+                    return;
+                }
             }
-            std::thread::sleep(std::time::Duration::from_millis(500));
-        }
+            *status_clone.lock().unwrap() =
+                InstanceStatus::Error("Instance failed to start within timeout".to_string());
+            log_buf.push_error(format!("Instance #{} failed to start within timeout", instance_id));
+        });
 
-        *self.instances.last_mut().unwrap().status.lock().unwrap() =
-            InstanceStatus::Error("Instance failed to start within timeout".to_string());
-        Err("Instance failed to start within timeout".to_string())
+        Ok(id)
     }
 
     /// Launch the router.
@@ -240,6 +258,7 @@ impl InstanceManager {
 
         let handle = &mut self.instances[idx];
         *handle.status.lock().unwrap() = InstanceStatus::Stopped;
+        handle.stop_flag.store(true, Ordering::Relaxed);
 
         let mut process_guard = handle.process.lock().unwrap();
         if let Some(mut child) = process_guard.take() {
@@ -256,7 +275,7 @@ impl InstanceManager {
     /// Stop all instances and the router.
     pub fn stop_all(&mut self) {
         // Stop router first
-        if let Some(mut router) = self.router.take() {
+        if let Some(router) = self.router.take() {
             *router.status.lock().unwrap() = InstanceStatus::Stopped;
             let mut process_guard = router.process.lock().unwrap();
             if let Some(mut child) = process_guard.take() {
@@ -268,6 +287,7 @@ impl InstanceManager {
         // Then stop instances
         for handle in &mut self.instances {
             *handle.status.lock().unwrap() = InstanceStatus::Stopped;
+            handle.stop_flag.store(true, Ordering::Relaxed);
             let mut process_guard = handle.process.lock().unwrap();
             if let Some(mut child) = process_guard.take() {
                 let pid = child.id();
@@ -362,6 +382,7 @@ impl InstanceManager {
             provider: provider.to_string(),
         };
 
+        let stop_flag = Arc::new(AtomicBool::new(false));
         let handle = InstanceHandle {
             id,
             config,
@@ -370,13 +391,14 @@ impl InstanceManager {
             process: Arc::new(Mutex::new(None)),
             log_buffer: log_buffer.clone(),
             port,
+            stop_flag: stop_flag.clone(),
         };
 
         // Spawn a background thread to sync status from ServerController
         let status_clone = status.clone();
         let inst_status_clone = instance_status.clone();
         std::thread::spawn(move || {
-            loop {
+            while !stop_flag.load(Ordering::Relaxed) {
                 let server_status = status_clone.lock().unwrap().clone();
                 let new_status = match server_status {
                     crate::models::ServerStatus::Running => InstanceStatus::Running,
@@ -385,7 +407,7 @@ impl InstanceManager {
                     crate::models::ServerStatus::Error(e) => InstanceStatus::Error(e),
                 };
                 *inst_status_clone.lock().unwrap() = new_status;
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                std::thread::sleep(std::time::Duration::from_millis(500));
             }
         });
 
@@ -396,7 +418,11 @@ impl InstanceManager {
     /// Unregister an external instance when it's stopped.
     pub fn unregister_external_instance(&mut self, model_path: &str, port: u16) {
         self.instances.retain(|h| {
-            !(h.config.model_path == model_path && h.config.port == port)
+            let stopping = h.config.model_path == model_path && h.config.port == port;
+            if stopping {
+                h.stop_flag.store(true, Ordering::Relaxed);
+            }
+            !stopping
         });
     }
 }

@@ -23,8 +23,11 @@ impl PerfMetricHistory {
     }
 
     pub fn push(&mut self, timestamp: f64, value: f32) {
-        if self.points.len() >= self.max_capacity {
-            self.points.remove(0);
+        let len = self.points.len();
+        if len >= self.max_capacity {
+            // O(1) swap-remove from front: swap with last, then pop
+            self.points.swap(0, len - 1);
+            self.points.pop();
         }
         self.points.push(PerfMetricPoint { timestamp, value });
     }

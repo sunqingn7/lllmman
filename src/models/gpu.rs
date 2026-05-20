@@ -22,6 +22,17 @@ pub enum GpuTier {
     Ultra,
 }
 
+impl GpuTier {
+    pub fn label(&self) -> &'static str {
+        match self {
+            GpuTier::Low => "Low",
+            GpuTier::Mid => "Mid",
+            GpuTier::High => "High",
+            GpuTier::Ultra => "Ultra",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GpuProvider {
     Nvidia,

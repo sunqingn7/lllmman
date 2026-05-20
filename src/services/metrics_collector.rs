@@ -81,8 +81,6 @@ impl MetricsCollector {
 
         std::thread::spawn(move || {
             while *running.lock().unwrap() {
-                std::thread::sleep(interval);
-
                 let manager = instance_manager.lock().unwrap();
                 let mut snap = MetricsSnapshot {
                     timestamp: std::time::SystemTime::now(),
@@ -131,6 +129,7 @@ impl MetricsCollector {
 
                 drop(manager);
                 *snapshot.lock().unwrap() = snap;
+                std::thread::sleep(interval);
             }
         });
     }

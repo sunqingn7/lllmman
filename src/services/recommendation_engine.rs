@@ -250,7 +250,10 @@ impl RecommendationEngine {
             return false;
         }
         let caps: Vec<_> = gpus.iter().filter_map(|g| g.compute_capability).collect();
-        caps.windows(2).any(|w| w[0] != w[1])
+        if caps.len() < 2 {
+            return false;
+        }
+        !caps.iter().all(|c| c == &caps[0])
     }
 
     pub fn recommended_deployment_mode(gpus: &[GpuInfo], model_size_gb: f32) -> DeploymentMode {
@@ -270,14 +273,8 @@ impl RecommendationEngine {
         }
     }
 
-    pub fn recommended_router_provider(gpus: &[GpuInfo]) -> RouterProvider {
-        if Self::is_heterogeneous(gpus) {
-            RouterProvider::SglangRouter
-        } else if gpus.len() >= 4 {
-            RouterProvider::SglangRouter
-        } else {
-            RouterProvider::SglangRouter
-        }
+    pub fn recommended_router_provider(_gpus: &[GpuInfo]) -> RouterProvider {
+        RouterProvider::SglangRouter
     }
 
     pub fn recommended_router_policy(gpus: &[GpuInfo]) -> RouterPolicy {
@@ -330,6 +327,14 @@ mod tests {
             make_gpu("RTX 4090", 24576, Some((8, 9)), GpuTier::High),
         ];
         assert!(!RecommendationEngine::is_heterogeneous(&gpus_same));
+
+        // Verify order-independent detection: [8.9, 8.9, 8.6] should still be heterogeneous
+        let gpus_unsorted = vec![
+            make_gpu("RTX 4090", 24576, Some((8, 9)), GpuTier::High),
+            make_gpu("RTX 4090", 24576, Some((8, 9)), GpuTier::High),
+            make_gpu("RTX 3090", 24576, Some((8, 6)), GpuTier::Mid),
+        ];
+        assert!(RecommendationEngine::is_heterogeneous(&gpus_unsorted));
 
         let gpus_diff = vec![
             make_gpu("RTX 3090", 24576, Some((8, 6)), GpuTier::Mid),

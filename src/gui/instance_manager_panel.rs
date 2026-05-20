@@ -301,12 +301,12 @@ impl MultiInstanceManagerPanel {
         response.clicked()
     }
 
-    fn render_instance_logs(&self, ui: &mut Ui, manager: &crate::core::InstanceManager) {
+    fn render_instance_logs(&mut self, ui: &mut Ui, manager: &crate::core::InstanceManager) {
         if let Some(instance_id) = self.selected_instance {
             if let Some(handle) = manager.get_instance(instance_id) {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("Instance Logs").strong().size(11.0));
-                    ui.text_edit_singleline(&mut self.log_filter.clone());
+                    ui.text_edit_singleline(&mut self.log_filter);
                 });
                 ui.add_space(4.0);
 
