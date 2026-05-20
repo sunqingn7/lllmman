@@ -311,6 +311,23 @@ pub trait LlmProvider: Send + Sync {
 
     fn detect_running_servers(&self) -> Vec<DetectedServer>;
     fn parse_server_config(&self, cmd_line: &str) -> ProviderConfig;
+
+    fn build_command_line_for_instance(
+        &self,
+        config: &crate::models::deployment::InstanceConfig,
+        settings: &ProviderSettings,
+    ) -> String {
+        // Default implementation: convert InstanceConfig to ProviderConfig and use build_command_line
+        let mut provider_config = ProviderConfig::default();
+        provider_config.model_path = config.model_path.clone();
+        provider_config.port = config.port;
+        provider_config.context_size = config.context_size;
+        provider_config.host = "0.0.0.0".to_string();
+        if let Some(gpu) = config.gpu_indices.first() {
+            provider_config.selected_gpu = Some(*gpu);
+        }
+        self.build_command_line(&provider_config, settings)
+    }
 }
 
 pub trait ModelDownloader: Send + Sync {

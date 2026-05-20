@@ -116,6 +116,7 @@ pub fn save_model_config(
             enable_thinking: config.enable_thinking,
             tokenizer: config.tokenizer.clone(),
             mmproj_path: config.mmproj_path.clone(),
+            router_port: None,
         },
             );
 

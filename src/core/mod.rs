@@ -1,10 +1,12 @@
 #![allow(dead_code)]
 
+pub mod instance_manager;
 pub mod log_buffer;
 pub mod provider;
 pub mod registry;
 pub mod server;
 
+pub use instance_manager::{InstanceHandle, InstanceManager, InstanceMetrics, InstanceStatus, RouterHandle};
 pub use log_buffer::*;
 pub use provider::DetectedServer;
 pub use provider::ProviderError;

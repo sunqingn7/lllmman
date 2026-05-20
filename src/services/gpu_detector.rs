@@ -2,13 +2,14 @@ use std::fs;
 use std::process::Command;
 
 use crate::models::{GpuInfo, GpuProvider, GpuUsage};
+use crate::services::gpu_arch::{classify_performance_tier, infer_compute_cap_from_name};
 
 pub fn detect_gpus() -> Vec<GpuInfo> {
     let mut gpus = Vec::new();
 
     if let Ok(output) = Command::new("nvidia-smi")
         .args([
-            "--query-gpu=index,name,memory.total",
+            "--query-gpu=index,name,memory.total,compute_cap",
             "--format=csv,noheader,nounits",
         ])
         .output()
@@ -17,16 +18,20 @@ pub fn detect_gpus() -> Vec<GpuInfo> {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
-                if parts.len() >= 3 {
+                if parts.len() >= 4 {
                     if let (Ok(index), Ok(vram)) =
                         (parts[0].parse::<u32>(), parts[2].parse::<u32>())
                     {
+                        let compute_cap = parse_compute_cap(parts[3]);
+                        let tier = classify_performance_tier(compute_cap, vram);
                         let mut gpu_info = GpuInfo {
                             name: parts[1].to_string(),
                             total_vram_mb: vram,
                             index,
                             provider: GpuProvider::Nvidia,
                             temperature_c: None,
+                            compute_capability: compute_cap,
+                            performance_tier: tier,
                         };
                         gpu_info.temperature_c = get_gpu_temperature(&gpu_info).map(|t| t as f32);
                         gpus.push(gpu_info);
@@ -48,12 +53,16 @@ pub fn detect_gpus() -> Vec<GpuInfo> {
                         for (key, value) in cards {
                             if let Some(name) = value.get("Card series").and_then(|v| v.as_str()) {
                                 if let Ok(index) = key.parse::<u32>() {
+                                    let compute_cap = infer_compute_cap_from_name(name, GpuProvider::Amd);
+                                    let tier = classify_performance_tier(compute_cap, 0);
                                     let mut gpu_info = GpuInfo {
                                         name: name.to_string(),
                                         total_vram_mb: 0,
                                         index,
                                         provider: GpuProvider::Amd,
                                         temperature_c: None,
+                                        compute_capability: compute_cap,
+                                        performance_tier: tier,
                                     };
                                     gpu_info.temperature_c =
                                         get_gpu_temperature(&gpu_info).map(|t| t as f32);
@@ -89,16 +98,21 @@ pub fn detect_gpus() -> Vec<GpuInfo> {
                                 }
                             }
                             if driver.contains("i915") || driver.contains("xe") {
+                                let gpu_name = if name_val.is_empty() {
+                                    "Intel GPU".to_string()
+                                } else {
+                                    name_val
+                                };
+                                let compute_cap = infer_compute_cap_from_name(&gpu_name, GpuProvider::Intel);
+                                let tier = classify_performance_tier(compute_cap, 0);
                                 let mut gpu_info = GpuInfo {
-                                    name: if name_val.is_empty() {
-                                        "Intel GPU".to_string()
-                                    } else {
-                                        name_val
-                                    },
+                                    name: gpu_name,
                                     total_vram_mb: 0,
                                     index: card_index,
                                     provider: GpuProvider::Intel,
                                     temperature_c: None,
+                                    compute_capability: compute_cap,
+                                    performance_tier: tier,
                                 };
                                 gpu_info.temperature_c =
                                     get_gpu_temperature(&gpu_info).map(|t| t as f32);
@@ -113,6 +127,16 @@ pub fn detect_gpus() -> Vec<GpuInfo> {
     }
 
     gpus
+}
+
+fn parse_compute_cap(cap_str: &str) -> Option<(u32, u32)> {
+    let parts: Vec<&str> = cap_str.split('.').collect();
+    if parts.len() == 2 {
+        if let (Ok(major), Ok(minor)) = (parts[0].trim().parse::<u32>(), parts[1].trim().parse::<u32>()) {
+            return Some((major, minor));
+        }
+    }
+    None
 }
 
 fn get_gpu_usage_for_gpu(gpu: &GpuInfo) -> Option<GpuUsage> {

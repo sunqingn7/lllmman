@@ -7,6 +7,19 @@ pub struct GpuInfo {
     pub index: u32,
     pub provider: GpuProvider,
     pub temperature_c: Option<f32>,
+    #[serde(default)]
+    pub compute_capability: Option<(u32, u32)>,
+    #[serde(default)]
+    pub performance_tier: GpuTier,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GpuTier {
+    #[default]
+    Low,
+    Mid,
+    High,
+    Ultra,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]

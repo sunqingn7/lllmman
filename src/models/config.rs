@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::models::deployment::DeploymentMode;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub enum GpuAllocation {
     Single(u32),
@@ -55,6 +57,10 @@ pub struct AppSettings {
     pub default_cache_type_v: String,
     pub gpu_strategy: GpuAllocation,
     pub selected_provider: String,
+    #[serde(default)]
+    pub deployment_mode: DeploymentMode,
+    #[serde(default)]
+    pub auto_detect_heterogeneous: bool,
 }
 
 impl Default for AppSettings {
@@ -75,6 +81,8 @@ impl Default for AppSettings {
             default_cache_type_v: "q4_0".to_string(),
             gpu_strategy: GpuAllocation::All,
             selected_provider: "llama.cpp".to_string(),
+            deployment_mode: DeploymentMode::default(),
+            auto_detect_heterogeneous: true,
         }
     }
 }
@@ -118,6 +126,8 @@ pub struct ModelConfigEntry {
     pub tokenizer: String,
     #[serde(default)]
     pub mmproj_path: String,
+    #[serde(default)]
+    pub router_port: Option<u16>,
 }
 
 impl Default for ModelConfigEntry {
@@ -145,6 +155,7 @@ impl Default for ModelConfigEntry {
             enable_thinking: None,
             tokenizer: String::new(),
             mmproj_path: String::new(),
+            router_port: None,
         }
     }
 }

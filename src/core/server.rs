@@ -255,6 +255,11 @@ impl ServerController {
         stored_status
     }
 
+    /// Get a clone of the status Arc for sharing with InstanceManager.
+    pub fn get_status_arc(&self) -> Arc<Mutex<ServerStatus>> {
+        self.status.clone()
+    }
+
     pub fn refresh_external_detection(&mut self) {
         let Some(provider) = &self.provider else {
             return;

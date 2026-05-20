@@ -3,12 +3,12 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs},
     Frame, Terminal,
 };
 
 use crate::core::{
-    LlmProvider, ModelInfo, ProviderConfig, ProviderRegistry, ProviderSettings, ServerController,
+    LlmProvider, LogBuffer, LogLevel, ModelInfo, ProviderConfig, ProviderRegistry, ProviderSettings, ServerController,
 };
 use crate::models::{AppSettings, GpuInfo, ServerStatus};
 use crate::services::{
@@ -17,28 +17,23 @@ use crate::services::{
     save_model_config, save_provider_settings_for,
 };
 
-enum InputMode {
-    Normal,
-    ModelSearch,
-    ProviderSettingsEdit { field: ProviderSettingsField },
-}
-
-#[derive(Clone, Copy)]
-enum ProviderSettingsField {
-    BinaryPath,
-    EnvScript,
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum TuiView {
+    Models,
+    Instances,
+    Logs,
+    Metrics,
 }
 
 #[derive(PartialEq, Eq)]
-enum FocusPanel {
-    Models,
-    Config,
+enum InputMode {
+    Normal,
+    ModelSearch,
 }
 
 pub struct TuiApp {
     models: Vec<ModelInfo>,
     filtered_models: Vec<ModelInfo>,
-    #[allow(dead_code)]
     gpus: Vec<GpuInfo>,
     server_config: ProviderConfig,
     server_controller: ServerController,
@@ -48,10 +43,16 @@ pub struct TuiApp {
     selected_provider: String,
     available_providers: Vec<(String, String)>,
     input_mode: InputMode,
-    focus_panel: FocusPanel,
     search_query: String,
     scroll_offset: usize,
     status_message: String,
+    // Multi-panel state
+    active_view: TuiView,
+    instance_scroll: usize,
+    log_scroll: usize,
+    log_buffer: LogBuffer,
+    // Instance manager
+    instance_manager: crate::core::InstanceManager,
 }
 
 impl TuiApp {
@@ -76,7 +77,6 @@ impl TuiApp {
 
         let mut server_config = provider.get_config_template();
 
-        // Load saved model config from GUI as fallback
         if let Some(saved_config) = get_fallback_config(&selected_provider) {
             server_config.context_size = saved_config.context_size;
             server_config.batch_size = saved_config.batch_size;
@@ -89,19 +89,10 @@ impl TuiApp {
             server_config.num_prompt_tracking = saved_config.num_prompt_tracking;
         }
 
-        // Detect running servers and populate config
         let running_servers = detect_running_servers();
         for server in &running_servers {
             if server.provider_id == selected_provider {
-                log::info!(
-                    "Detected running {} server (PID {}): {}",
-                    server.binary,
-                    server.pid,
-                    server.command_line
-                );
                 let detected_config = parse_server_args(&server.provider_id, &server.command_line);
-
-                // Merge detected config (running server takes priority over saved config)
                 if server_config.model_path.is_empty() {
                     server_config.model_path = detected_config.model_path;
                 }
@@ -125,27 +116,22 @@ impl TuiApp {
         }
 
         let mut models = Vec::new();
-
-        // Scan user-configured directories first
         for dir in &settings.scan_directories {
             let found = provider.scan_models(dir);
             models.extend(found);
         }
-
-        // Scan provider-specific default directories
-        let provider_dirs = provider.default_model_directories();
-        for dir in &provider_dirs {
+        for dir in &provider.default_model_directories() {
             let found = provider.scan_models(dir);
             models.extend(found);
         }
 
         let filtered_models = models.clone();
-
         let provider_settings = load_provider_settings_for(&selected_provider);
 
         let mut server_controller = ServerController::new();
         server_controller.set_provider(provider.clone());
         server_controller.set_provider_settings(provider_settings.clone());
+        let log_buffer = server_controller.get_log_buffer();
 
         Self {
             models,
@@ -159,10 +145,14 @@ impl TuiApp {
             selected_provider,
             available_providers,
             input_mode: InputMode::Normal,
-            focus_panel: FocusPanel::Models,
             search_query: String::new(),
             scroll_offset: 0,
             status_message: String::from("Ready"),
+            active_view: TuiView::Models,
+            instance_scroll: 0,
+            log_scroll: 0,
+            log_buffer,
+            instance_manager: crate::core::InstanceManager::new(),
         }
     }
 
@@ -192,8 +182,8 @@ impl TuiApp {
             self.provider_settings = load_provider_settings_for(provider_id);
             self.server_controller = ServerController::new();
             self.server_controller.set_provider(provider.clone());
-            self.server_controller
-                .set_provider_settings(self.provider_settings.clone());
+            self.server_controller.set_provider_settings(self.provider_settings.clone());
+            self.log_buffer = self.server_controller.get_log_buffer();
 
             let mut models = Vec::new();
             for dir in &self.settings.scan_directories {
@@ -235,30 +225,37 @@ impl TuiApp {
         match &self.input_mode {
             InputMode::Normal => {
                 match key.code {
-                    // Quit
                     crossterm::event::KeyCode::Char('q') | crossterm::event::KeyCode::Esc => {
                         return true;
                     }
 
-                    // Panel navigation
+                    // View switching: 1=Models, 2=Instances, 3=Logs, 4=Metrics
+                    crossterm::event::KeyCode::Char('1') => self.active_view = TuiView::Models,
+                    crossterm::event::KeyCode::Char('2') => self.active_view = TuiView::Instances,
+                    crossterm::event::KeyCode::Char('3') => self.active_view = TuiView::Logs,
+                    crossterm::event::KeyCode::Char('4') => self.active_view = TuiView::Metrics,
+
+                    // Tab navigation
                     crossterm::event::KeyCode::Tab => {
-                        self.focus_panel = match self.focus_panel {
-                            FocusPanel::Models => FocusPanel::Config,
-                            FocusPanel::Config => FocusPanel::Models,
+                        self.active_view = match self.active_view {
+                            TuiView::Models => TuiView::Instances,
+                            TuiView::Instances => TuiView::Logs,
+                            TuiView::Logs => TuiView::Metrics,
+                            TuiView::Metrics => TuiView::Models,
                         };
                     }
                     crossterm::event::KeyCode::BackTab => {
-                        self.focus_panel = match self.focus_panel {
-                            FocusPanel::Config => FocusPanel::Models,
-                            FocusPanel::Models => FocusPanel::Config,
+                        self.active_view = match self.active_view {
+                            TuiView::Models => TuiView::Metrics,
+                            TuiView::Instances => TuiView::Models,
+                            TuiView::Logs => TuiView::Instances,
+                            TuiView::Metrics => TuiView::Logs,
                         };
                     }
 
-                    // Model list navigation (when focused on models panel)
-                    crossterm::event::KeyCode::Char('j')
-                    | crossterm::event::KeyCode::Down
-                    | crossterm::event::KeyCode::Char('\n') => {
-                        if self.focus_panel == FocusPanel::Models {
+                    // Model list navigation
+                    crossterm::event::KeyCode::Char('j') | crossterm::event::KeyCode::Down => {
+                        if self.active_view == TuiView::Models {
                             if let Some(idx) = self.selected_model_index {
                                 if idx < self.filtered_models.len() - 1 {
                                     self.selected_model_index = Some(idx + 1);
@@ -269,11 +266,15 @@ impl TuiApp {
                             } else if !self.filtered_models.is_empty() {
                                 self.selected_model_index = Some(0);
                             }
+                        } else if self.active_view == TuiView::Logs {
+                            self.log_scroll += 1;
+                        } else if self.active_view == TuiView::Instances {
+                            self.instance_scroll += 1;
                         }
                     }
 
                     crossterm::event::KeyCode::Char('k') | crossterm::event::KeyCode::Up => {
-                        if self.focus_panel == FocusPanel::Models {
+                        if self.active_view == TuiView::Models {
                             if let Some(idx) = self.selected_model_index {
                                 if idx > 0 {
                                     self.selected_model_index = Some(idx - 1);
@@ -282,119 +283,73 @@ impl TuiApp {
                                     }
                                 }
                             }
+                        } else if self.active_view == TuiView::Logs {
+                            self.log_scroll = self.log_scroll.saturating_sub(1);
+                        } else if self.active_view == TuiView::Instances {
+                            self.instance_scroll = self.instance_scroll.saturating_sub(1);
                         }
                     }
 
-                    // Jump to top/bottom
                     crossterm::event::KeyCode::Char('g') => {
-                        if self.focus_panel == FocusPanel::Models {
-                            if !self.filtered_models.is_empty() {
-                                self.selected_model_index = Some(0);
-                                self.scroll_offset = 0;
-                            }
+                        if self.active_view == TuiView::Models && !self.filtered_models.is_empty() {
+                            self.selected_model_index = Some(0);
+                            self.scroll_offset = 0;
+                        } else if self.active_view == TuiView::Logs {
+                            self.log_scroll = 0;
+                        } else if self.active_view == TuiView::Instances {
+                            self.instance_scroll = 0;
                         }
                     }
                     crossterm::event::KeyCode::Char('G') => {
-                        if self.focus_panel == FocusPanel::Models {
-                            if !self.filtered_models.is_empty() {
-                                let last = self.filtered_models.len() - 1;
-                                self.selected_model_index = Some(last);
-                                self.scroll_offset = last.saturating_sub(10);
-                            }
+                        if self.active_view == TuiView::Models && !self.filtered_models.is_empty() {
+                            let last = self.filtered_models.len() - 1;
+                            self.selected_model_index = Some(last);
+                            self.scroll_offset = last.saturating_sub(10);
                         }
                     }
 
-                    // Search mode
                     crossterm::event::KeyCode::Char('/') => {
-                        if self.focus_panel == FocusPanel::Models {
+                        if self.active_view == TuiView::Models {
                             self.input_mode = InputMode::ModelSearch;
                             self.search_query.clear();
                         }
                     }
 
-                    // Provider settings mode
-                    crossterm::event::KeyCode::Char('p') => {
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
-                        {
-                            self.input_mode = InputMode::ProviderSettingsEdit {
-                                field: ProviderSettingsField::BinaryPath,
-                            };
-                        }
-                    }
-
-                    // Cycle providers
-                    crossterm::event::KeyCode::Char('c') => {
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
-                        {
-                            let current_idx = self
-                                .available_providers
-                                .iter()
-                                .position(|(id, _)| id == &self.selected_provider)
-                                .unwrap_or(0);
-                            let next_idx = (current_idx + 1) % self.available_providers.len();
-                            let next_provider = self.available_providers[next_idx].0.clone();
-                            self.switch_provider(&next_provider);
-                        }
-                    }
-
-                    // Select model / Start server
                     crossterm::event::KeyCode::Enter => {
-                        if self.focus_panel == FocusPanel::Models {
+                        if self.active_view == TuiView::Models {
                             if let Some(idx) = self.selected_model_index {
                                 if let Some(model) = self.filtered_models.get(idx) {
                                     self.server_config.model_path = model.path.clone();
-                                    // Load saved config for this model if it exists
-                                    if let Some(saved) =
-                                        load_model_config(&model.path, &self.selected_provider)
-                                    {
+                                    if let Some(saved) = load_model_config(&model.path, &self.selected_provider) {
                                         self.server_config.context_size = saved.context_size;
                                         self.server_config.batch_size = saved.batch_size;
                                         self.server_config.gpu_layers = saved.gpu_layers;
                                         self.server_config.threads = saved.threads;
                                         self.server_config.port = saved.port;
                                         self.server_config.host = saved.host.clone();
-                                        self.server_config.cache_type_k =
-                                            saved.cache_type_k.clone();
-                                        self.server_config.cache_type_v =
-                                            saved.cache_type_v.clone();
-                                        self.server_config.num_prompt_tracking =
-                                            saved.num_prompt_tracking;
-                                        self.server_config.additional_args =
-                                            saved.additional_args.clone();
+                                        self.server_config.cache_type_k = saved.cache_type_k.clone();
+                                        self.server_config.cache_type_v = saved.cache_type_v.clone();
+                                        self.server_config.num_prompt_tracking = saved.num_prompt_tracking;
+                                        self.server_config.additional_args = saved.additional_args.clone();
                                     }
                                     self.status_message = format!("Selected: {}", model.name);
                                 }
                             }
-                        } else if self.focus_panel == FocusPanel::Config {
-                            // Start/Stop server
+                        } else if self.active_view == TuiView::Instances {
                             let status = self.server_controller.get_status();
                             if matches!(status, ServerStatus::Running) {
                                 self.stop_server();
                             } else {
-                                // Save current config before starting
                                 if !self.server_config.model_path.is_empty() {
-                                    save_model_config(
-                                        &self.server_config.model_path,
-                                        &self.server_config,
-                                        &self.selected_provider,
-                                    )
-                                    .ok();
+                                    save_model_config(&self.server_config.model_path, &self.server_config, &self.selected_provider).ok();
                                 }
                                 self.start_server();
                             }
                         }
                     }
 
-                    // Start/Stop server shortcuts
                     crossterm::event::KeyCode::Char('s') => {
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
-                        {
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
                             let status = self.server_controller.get_status();
                             if matches!(status, ServerStatus::Running) {
                                 self.stop_server();
@@ -404,11 +359,17 @@ impl TuiApp {
                         }
                     }
                     crossterm::event::KeyCode::Char('x') => {
-                        if key
-                            .modifiers
-                            .contains(crossterm::event::KeyModifiers::CONTROL)
-                        {
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
                             self.stop_server();
+                        }
+                    }
+
+                    crossterm::event::KeyCode::Char('c') => {
+                        if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                            let current_idx = self.available_providers.iter().position(|(id, _)| id == &self.selected_provider).unwrap_or(0);
+                            let next_idx = (current_idx + 1) % self.available_providers.len();
+                            let next_provider = self.available_providers[next_idx].0.clone();
+                            self.switch_provider(&next_provider);
                         }
                     }
 
@@ -434,55 +395,12 @@ impl TuiApp {
                 }
                 _ => {}
             },
-            InputMode::ProviderSettingsEdit { field } => match key.code {
-                crossterm::event::KeyCode::Esc => {
-                    self.input_mode = InputMode::Normal;
-                }
-                crossterm::event::KeyCode::Enter => {
-                    self.input_mode = InputMode::Normal;
-                    save_provider_settings_for(&self.selected_provider, &self.provider_settings)
-                        .ok();
-                    self.server_controller
-                        .set_provider_settings(self.provider_settings.clone());
-                    self.status_message = "Provider settings saved".to_string();
-                }
-                crossterm::event::KeyCode::Backspace => match field {
-                    ProviderSettingsField::BinaryPath => {
-                        self.provider_settings.binary_path.pop();
-                    }
-                    ProviderSettingsField::EnvScript => {
-                        self.provider_settings.env_script.pop();
-                    }
-                },
-                crossterm::event::KeyCode::Tab => match field {
-                    ProviderSettingsField::BinaryPath => {
-                        self.input_mode = InputMode::ProviderSettingsEdit {
-                            field: ProviderSettingsField::EnvScript,
-                        };
-                    }
-                    ProviderSettingsField::EnvScript => {
-                        self.input_mode = InputMode::ProviderSettingsEdit {
-                            field: ProviderSettingsField::BinaryPath,
-                        };
-                    }
-                },
-                crossterm::event::KeyCode::Char(c) => match field {
-                    ProviderSettingsField::BinaryPath => {
-                        self.provider_settings.binary_path.push(c);
-                    }
-                    ProviderSettingsField::EnvScript => {
-                        self.provider_settings.env_script.push(c);
-                    }
-                },
-                _ => {}
-            },
         }
         false
     }
 }
 
 pub fn run() -> std::io::Result<()> {
-    // Setup terminal
     crossterm::terminal::enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     crossterm::execute!(
@@ -497,7 +415,6 @@ pub fn run() -> std::io::Result<()> {
 
     let result = run_inner(&mut terminal);
 
-    // Restore terminal
     crossterm::terminal::disable_raw_mode()?;
     crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
 
@@ -507,9 +424,7 @@ pub fn run() -> std::io::Result<()> {
 fn run_inner(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std::io::Result<()> {
     let mut app = TuiApp::new();
 
-    // Main loop
     loop {
-        // Draw frame
         terminal.draw(|f| {
             let size = f.size();
 
@@ -517,27 +432,22 @@ fn run_inner(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> std:
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(3),
+                    Constraint::Length(1),
                     Constraint::Min(0),
                     Constraint::Length(3),
                 ])
                 .split(size);
 
             render_header(f, chunks[0], &app);
-            render_main_content(f, chunks[1], &mut app);
-            render_footer(f, chunks[2], &app);
+            render_tabs(f, chunks[1], &app);
+            render_main_content(f, chunks[2], &mut app);
+            render_footer(f, chunks[3], &app);
 
-            // Render search overlay
             if let InputMode::ModelSearch = app.input_mode {
                 render_search_overlay(f, size, &app.search_query);
             }
-
-            // Render provider settings overlay
-            if let InputMode::ProviderSettingsEdit { .. } = app.input_mode {
-                render_provider_settings_overlay(f, size, &app);
-            }
         })?;
 
-        // Non-blocking event poll with 100ms timeout
         if crossterm::event::poll(std::time::Duration::from_millis(100))? {
             if let crossterm::event::Event::Key(key) = crossterm::event::read()? {
                 if app.handle_input(key) {
@@ -555,12 +465,12 @@ fn render_header(f: &mut Frame, area: Rect, app: &TuiApp) {
         .constraints([
             Constraint::Length(20),
             Constraint::Min(0),
-            Constraint::Length(30),
+            Constraint::Length(40),
         ])
         .split(area);
 
     let provider_text = format!("Provider: {}", app.selected_provider);
-    let help_text = "[Tab]switch [/]search [Ctrl+P]settings [Enter]start [q]quit";
+    let gpu_text = format!("GPUs: {} | {}", app.gpus.len(), if app.gpus.len() > 1 { "Multi-GPU" } else { "Single" });
 
     f.render_widget(
         Paragraph::new("LLLMMan").style(
@@ -572,18 +482,41 @@ fn render_header(f: &mut Frame, area: Rect, app: &TuiApp) {
     );
     f.render_widget(Paragraph::new(provider_text), chunks[1]);
     f.render_widget(
-        Paragraph::new(help_text).alignment(ratatui::layout::Alignment::Right),
+        Paragraph::new(gpu_text).alignment(ratatui::layout::Alignment::Right),
         chunks[2],
     );
 }
 
+fn render_tabs(f: &mut Frame, area: Rect, app: &TuiApp) {
+    let titles = vec!["[1] Models", "[2] Instances", "[3] Logs", "[4] Metrics"];
+    let tabs = Tabs::new(titles)
+        .block(Block::default().borders(Borders::ALL))
+        .select(match app.active_view {
+            TuiView::Models => 0,
+            TuiView::Instances => 1,
+            TuiView::Logs => 2,
+            TuiView::Metrics => 3,
+        })
+        .style(Style::default())
+        .highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+    f.render_widget(tabs, area);
+}
+
 fn render_main_content(f: &mut Frame, area: Rect, app: &mut TuiApp) {
+    match app.active_view {
+        TuiView::Models => render_models_view(f, area, app),
+        TuiView::Instances => render_instances_view(f, area, app),
+        TuiView::Logs => render_logs_view(f, area, app),
+        TuiView::Metrics => render_metrics_view(f, area, app),
+    }
+}
+
+fn render_models_view(f: &mut Frame, area: Rect, app: &mut TuiApp) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Min(0)])
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(area);
 
-    // Models panel
     let model_items: Vec<ListItem> = app
         .filtered_models
         .iter()
@@ -592,150 +525,190 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &mut TuiApp) {
         .enumerate()
         .map(|(i, model)| {
             let idx = app.scroll_offset + i;
-            let prefix = if app.selected_model_index == Some(idx) {
-                "► "
+            let prefix = if app.selected_model_index == Some(idx) { "► " } else { "  " };
+            let size_text = if model.size_gb > 0.0 {
+                format!("{:.1}GB", model.size_gb)
             } else {
-                "  "
+                "?GB".to_string()
             };
-            ListItem::new(format!("{}{}", prefix, model.name))
+            ListItem::new(format!("{}{} [{}]", prefix, model.name, size_text))
         })
         .collect();
 
     let models_block = Block::default()
         .borders(Borders::ALL)
-        .title("Models")
-        .title_style(if app.focus_panel == FocusPanel::Models {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        });
+        .title(format!("Models ({})", app.filtered_models.len()));
 
-    let model_list = List::new(model_items)
-        .block(models_block)
-        .style(Style::default().fg(Color::White));
-
+    let model_list = List::new(model_items).block(models_block);
     f.render_widget(model_list, chunks[0]);
 
-    // Config panel
     let server_status = app.server_controller.get_status();
     let is_running = matches!(server_status, ServerStatus::Running);
 
-    let config_block = Block::default()
-        .borders(Borders::ALL)
-        .title("Server Config")
-        .title_style(if app.focus_panel == FocusPanel::Config {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default()
-        });
-
     let config_content = vec![
-        Line::from(vec![
-            Span::raw("Model: "),
-            Span::raw(truncate_path(
-                &app.server_config.model_path,
-                chunks[1].width as usize,
-            )),
-        ]),
-        Line::from(vec![
-            Span::raw("Context: "),
-            Span::raw(app.server_config.context_size.to_string()),
-        ]),
-        Line::from(vec![
-            Span::raw("Batch: "),
-            Span::raw(app.server_config.batch_size.to_string()),
-        ]),
-        Line::from(vec![
-            Span::raw("GPU Layers: "),
-            Span::raw(app.server_config.gpu_layers.to_string()),
-        ]),
-        Line::from(vec![
-            Span::raw("Threads: "),
-            Span::raw(app.server_config.threads.to_string()),
-        ]),
-        Line::from(vec![
-            Span::raw("Port: "),
-            Span::raw(app.server_config.port.to_string()),
-        ]),
-        Line::from(vec![
-            Span::raw("Host: "),
-            Span::raw(&app.server_config.host),
-        ]),
-        Line::from(vec![
-            Span::raw("Args: "),
-            Span::raw(truncate_path(
-                &app.server_config.additional_args,
-                chunks[1].width as usize,
-            )),
-        ]),
+        Line::from(vec![Span::raw("Model: "), Span::raw(truncate_path(&app.server_config.model_path, chunks[1].width as usize))]),
+        Line::from(vec![Span::raw("Context: "), Span::raw(app.server_config.context_size.to_string())]),
+        Line::from(vec![Span::raw("Batch: "), Span::raw(app.server_config.batch_size.to_string())]),
+        Line::from(vec![Span::raw("GPU Layers: "), Span::raw(app.server_config.gpu_layers.to_string())]),
+        Line::from(vec![Span::raw("Threads: "), Span::raw(app.server_config.threads.to_string())]),
+        Line::from(vec![Span::raw("Port: "), Span::raw(app.server_config.port.to_string())]),
         Line::from(""),
         Line::from(vec![
             Span::raw("Status: "),
-            if is_running {
-                Span::raw("Running").green()
-            } else {
-                Span::raw("Stopped").yellow()
-            },
+            if is_running { Span::raw("Running").green() } else { Span::raw("Stopped").yellow() },
         ]),
         Line::from(""),
-        // Start/Stop button
         Line::from(vec![
             Span::raw("[").fg(if is_running { Color::Red } else { Color::Green }),
-            Span::raw(if is_running { "STOP" } else { "START " })
-                .fg(if is_running { Color::Red } else { Color::Green })
-                .add_modifier(Modifier::BOLD),
+            Span::raw(if is_running { "STOP" } else { "START" }).fg(if is_running { Color::Red } else { Color::Green }).add_modifier(Modifier::BOLD),
             Span::raw("]").fg(if is_running { Color::Red } else { Color::Green }),
-            Span::raw(" [Enter]"),
+            Span::raw(" [Enter] or [Ctrl+S]"),
         ]),
     ];
 
+    let config_block = Block::default().borders(Borders::ALL).title("Server Config");
     let config_para = Paragraph::new(config_content).block(config_block);
     f.render_widget(config_para, chunks[1]);
 }
 
-fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
+fn render_instances_view(f: &mut Frame, area: Rect, _app: &mut TuiApp) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(area);
+
+    let instance_lines = vec![
+        Line::from(vec![Span::raw("Instance Manager").fg(Color::Cyan).add_modifier(Modifier::BOLD)]),
+        Line::from(""),
+        Line::from("No instances running."),
+        Line::from(""),
+        Line::from("Use the GUI Deployment Wizard to launch"),
+        Line::from("multi-instance deployments."),
+        Line::from(""),
+        Line::from("Shortcuts:"),
+        Line::from("  [Enter] - Start/Stop server"),
+        Line::from("  [Ctrl+S] - Toggle server"),
+        Line::from("  [Ctrl+C] - Cycle provider"),
+    ];
+
+    let block = Block::default().borders(Borders::ALL).title("Instances");
+    let para = Paragraph::new(instance_lines).block(block);
+    f.render_widget(para, chunks[0]);
+
+    let gpu_lines: Vec<Line> = std::iter::once(Line::from(vec![Span::raw("GPU Topology").fg(Color::Cyan).add_modifier(Modifier::BOLD)]))
+        .chain(std::iter::once(Line::from("")))
+        .chain(_app.gpus.iter().map(|gpu| {
+            let vram_gb = gpu.total_vram_mb as f32 / 1024.0;
+            let cap = gpu.compute_capability.map(|(m, n)| format!("SM {}.{}", m, n)).unwrap_or("N/A".to_string());
+            let temp = gpu.temperature_c.map(|t| format!("{:.0}°C", t)).unwrap_or("N/A".to_string());
+            Line::from(format!("  GPU{}: {} | {:.0}GB | {} | {}", gpu.index, gpu.name, vram_gb, cap, temp))
+        }))
+        .collect();
+
+    let gpu_block = Block::default().borders(Borders::ALL).title("GPU Topology");
+    let gpu_para = Paragraph::new(gpu_lines).block(gpu_block);
+    f.render_widget(gpu_para, chunks[1]);
+}
+
+fn render_logs_view(f: &mut Frame, area: Rect, app: &mut TuiApp) {
+    let entries = app.log_buffer.get_entries();
+    let visible_height = area.height.saturating_sub(2) as usize;
+
+    let log_lines: Vec<Line> = entries
+        .iter()
+        .skip(app.log_scroll)
+        .take(visible_height)
+        .map(|entry| {
+            let level_color = match entry.level {
+                LogLevel::Error => Color::Red,
+                LogLevel::Warn => Color::Yellow,
+                LogLevel::Info => Color::White,
+            };
+            let level_text = match entry.level {
+                LogLevel::Error => "ERR",
+                LogLevel::Warn => "WRN",
+                LogLevel::Info => "INF",
+            };
+            Line::from(vec![
+                Span::raw(format!("[{}] ", level_text)).fg(level_color),
+                Span::raw(&entry.message),
+            ])
+        })
+        .collect();
+
+    let block = Block::default().borders(Borders::ALL).title(format!("Logs ({})", entries.len()));
+    let para = Paragraph::new(log_lines).block(block);
+    f.render_widget(para, area);
+}
+
+fn render_metrics_view(f: &mut Frame, area: Rect, _app: &mut TuiApp) {
     let stats = get_system_stats();
 
-    let vram_text = format!("VRAM: {}/{} MB", stats.vram_used_mb, stats.vram_total_mb);
-
-    let ram_cpu_text = if let Some(cpu_temp) = stats.cpu_temperature {
-        format!(
-            "RAM: {}/{} MB | CPU: {:.1}% ({:.0}°C)",
-            stats.ram_used_mb, stats.ram_total_mb, stats.cpu_percent, cpu_temp
-        )
+    let vram_pct = if stats.vram_total_mb > 0 {
+        (stats.vram_used_mb as f32 / stats.vram_total_mb as f32) * 100.0
     } else {
-        format!(
-            "RAM: {}/{} MB | CPU: {:.1}%",
-            stats.ram_used_mb, stats.ram_total_mb, stats.cpu_percent
-        )
+        0.0
     };
+    let ram_pct = if stats.ram_total_mb > 0 {
+        (stats.ram_used_mb as f32 / stats.ram_total_mb as f32) * 100.0
+    } else {
+        0.0
+    };
+
+    let bar = |pct: f32, width: u16| -> String {
+        let filled = (pct / 100.0 * width as f32) as usize;
+        let empty = width as usize - filled;
+        format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))
+    };
+
+    let lines = vec![
+        Line::from(vec![Span::raw("System Metrics").fg(Color::Cyan).add_modifier(Modifier::BOLD)]),
+        Line::from(""),
+        Line::from(format!("CPU:    {:.1}% {}", stats.cpu_percent, bar(stats.cpu_percent, 30))),
+        Line::from(format!("RAM:    {:.1}% {} ({}/{} MB)", ram_pct, bar(ram_pct, 30), stats.ram_used_mb, stats.ram_total_mb)),
+        Line::from(format!("VRAM:   {:.1}% {} ({}/{} MB)", vram_pct, bar(vram_pct, 30), stats.vram_used_mb, stats.vram_total_mb)),
+        Line::from(""),
+    ];
+
+    let gpu_lines: Vec<Line> = if stats.gpu_temperatures.is_empty() {
+        vec![Line::from("No GPU data available")]
+    } else {
+        stats.gpu_temperatures.iter().map(|gpu| {
+            let temp = gpu.temperature_c.map(|t| format!("{:.0}°C", t)).unwrap_or("N/A".to_string());
+            Line::from(format!("  GPU{}: {}", gpu.index, temp))
+        }).collect()
+    };
+
+    let all_lines: Vec<Line> = lines.into_iter().chain(gpu_lines).collect();
+
+    let block = Block::default().borders(Borders::ALL).title("Performance Metrics");
+    let para = Paragraph::new(all_lines).block(block);
+    f.render_widget(para, area);
+}
+
+fn render_footer(f: &mut Frame, area: Rect, app: &TuiApp) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Percentage(25),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    let stats = get_system_stats();
+    let vram_text = format!("VRAM: {}/{} MB", stats.vram_used_mb, stats.vram_total_mb);
+    let ram_cpu_text = format!("RAM: {}/{} MB | CPU: {:.1}%", stats.ram_used_mb, stats.ram_total_mb, stats.cpu_percent);
 
     let gpu_text = if stats.gpu_temperatures.is_empty() {
         "No GPU".to_string()
     } else {
-        stats
-            .gpu_temperatures
-            .iter()
-            .map(|gpu| {
-                let temp = gpu
-                    .temperature_c
-                    .map(|t| format!("{:.0}°C", t))
-                    .unwrap_or_else(|| "N/A".to_string());
-                format!("GPU{}: {}", gpu.index, temp)
-            })
-            .collect::<Vec<_>>()
-            .join(" | ")
+        stats.gpu_temperatures.iter().map(|gpu| {
+            let temp = gpu.temperature_c.map(|t| format!("{:.0}°C", t)).unwrap_or_else(|| "N/A".to_string());
+            format!("GPU{}: {}", gpu.index, temp)
+        }).collect::<Vec<_>>().join(" | ")
     };
-
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(30),
-            Constraint::Percentage(30),
-            Constraint::Min(0),
-        ])
-        .split(area);
 
     f.render_widget(Paragraph::new(vram_text), chunks[0]);
     f.render_widget(Paragraph::new(ram_cpu_text), chunks[1]);
@@ -752,56 +725,14 @@ fn render_search_overlay(f: &mut Frame, size: Rect, query: &str) {
     let area = Rect::new(size.x + 5, size.y + 3, size.width - 10, 3);
     f.render_widget(Clear, area);
     f.render_widget(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Search Models"),
+        Block::default().borders(Borders::ALL).title("Search Models"),
         area,
     );
-    let search_text = if query.is_empty() {
-        "/".to_string()
-    } else {
-        format!("/{}", query)
-    };
+    let search_text = if query.is_empty() { "/".to_string() } else { format!("/{}", query) };
     f.render_widget(
         Paragraph::new(search_text.as_str()).fg(Color::Yellow),
         Rect::new(area.x + 1, area.y + 1, area.width - 2, 1),
     );
-}
-
-fn render_provider_settings_overlay(f: &mut Frame, size: Rect, app: &TuiApp) {
-    let area = Rect::new(size.x + 5, size.y + 5, size.width - 10, 7);
-    f.render_widget(Clear, area);
-
-    let binary_label = if let InputMode::ProviderSettingsEdit {
-        field: ProviderSettingsField::BinaryPath,
-    } = app.input_mode
-    {
-        format!("> Binary Path: {}", app.provider_settings.binary_path)
-    } else {
-        format!("  Binary Path: {}", app.provider_settings.binary_path)
-    };
-    let env_label = if let InputMode::ProviderSettingsEdit {
-        field: ProviderSettingsField::EnvScript,
-    } = app.input_mode
-    {
-        format!("> Env Script: {}", app.provider_settings.env_script)
-    } else {
-        format!("  Env Script: {}", app.provider_settings.env_script)
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Provider Settings (Ctrl+P)");
-
-    let content = vec![
-        Line::from(binary_label.as_str()),
-        Line::from(env_label.as_str()),
-        Line::from(""),
-        Line::from("[Tab] switch | [Enter] save | [Esc] cancel"),
-    ];
-
-    let para = Paragraph::new(content).block(block);
-    f.render_widget(para, area);
 }
 
 fn truncate_path(path: &str, max_width: usize) -> String {

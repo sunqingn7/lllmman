@@ -85,6 +85,11 @@ use crate::services::{
     save_model_config, save_provider_settings_for, DirectUrlDownloader, DownloadManager,
     GitHubReleaseDownloader, HuggingFaceDownloader,
 };
+use crate::gui::gpu_topology_panel::{GpuTopologyEntry, GpuTopologyPanel, GpuTier};
+use crate::gui::instance_manager_panel::MultiInstanceManagerPanel;
+use crate::gui::deployment_wizard::DeploymentWizard;
+use crate::gui::performance_monitor_panel::PerformanceMonitorPanel;
+use crate::gui::recommendation_panel::RecommendationPanel;
 
 pub fn run() {
     let options = eframe::NativeOptions::default();
@@ -128,6 +133,22 @@ pub struct App {
     needs_repaint: Arc<AtomicBool>,
     // Queue for models to delete (collected during UI rendering, processed after)
     models_to_delete: Vec<String>,
+    // GPU Topology Panel
+    gpu_topology_panel: GpuTopologyPanel,
+    // Multi-Instance Manager
+    instance_manager: crate::core::InstanceManager,
+    instance_manager_panel: MultiInstanceManagerPanel,
+    deployment_wizard: DeploymentWizard,
+    performance_monitor: PerformanceMonitorPanel,
+    recommendation_panel: RecommendationPanel,
+    main_view: MainView,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MainView {
+    ServerConfig,
+    InstanceManager,
+    PerformanceMonitor,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,6 +160,11 @@ impl App {
     pub fn new() -> Self {
         let settings = config_persistence::load_settings();
         let gpus = gpu_detector::detect_gpus();
+        let gpu_count = gpus.len() as u32;
+        let heterogeneous = gpus.len() > 1 && {
+            let caps: Vec<_> = gpus.iter().filter_map(|g| g.compute_capability).collect();
+            caps.windows(2).any(|w| w[0] != w[1])
+        };
         let available_providers = ProviderRegistry::list();
 
         // First, detect running servers across ALL providers
@@ -250,6 +276,13 @@ impl App {
             previous_server_status: crate::models::ServerStatus::Stopped,
             needs_repaint: Arc::new(AtomicBool::new(false)),
             models_to_delete: Vec::new(),
+            gpu_topology_panel: GpuTopologyPanel::new(),
+            instance_manager: crate::core::InstanceManager::new(),
+            instance_manager_panel: MultiInstanceManagerPanel::new(),
+            deployment_wizard: DeploymentWizard::new(gpu_count, heterogeneous),
+            performance_monitor: PerformanceMonitorPanel::new(),
+            recommendation_panel: RecommendationPanel::new(),
+            main_view: MainView::ServerConfig,
         }
     }
 
@@ -486,6 +519,38 @@ impl App {
     }
 
     fn render_main_content(&mut self, ui: &mut egui::Ui) {
+        // Tab bar at the top
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.main_view, MainView::ServerConfig, "⚙️ Server Config");
+            ui.selectable_value(&mut self.main_view, MainView::InstanceManager, "🖥️ Instance Manager");
+            ui.selectable_value(&mut self.main_view, MainView::PerformanceMonitor, "📊 Performance");
+        });
+        ui.separator();
+
+        match self.main_view {
+            MainView::ServerConfig => {
+                self.render_server_config_view(ui);
+            }
+            MainView::InstanceManager => {
+                self.instance_manager_panel.sync_from_manager(&self.instance_manager);
+                self.instance_manager_panel.show(ui, &mut self.instance_manager);
+                if self.instance_manager_panel.show_wizard {
+                    self.instance_manager_panel.show_wizard = false;
+                    self.deployment_wizard.open = true;
+                    self.deployment_wizard.reset();
+                }
+            }
+            MainView::PerformanceMonitor => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0);
+                self.performance_monitor.show(ui, &self.instance_manager, now);
+            }
+        }
+    }
+
+    fn render_server_config_view(&mut self, ui: &mut egui::Ui) {
         egui::SidePanel::left("models")
             .default_width(250.0)
             .show_inside(ui, |ui| {
@@ -1512,6 +1577,10 @@ impl App {
                                 )
                                 .ok();
                             }
+                            self.instance_manager.unregister_external_instance(
+                                &self.server_config.model_path,
+                                self.server_config.port,
+                            );
                             self.server_controller.stop().ok();
                             self.started_hf_model = None;
                         }
@@ -1535,9 +1604,19 @@ impl App {
                                 .ok();
                             }
                             let provider = self.get_current_provider();
-                            self.server_controller
-                                .start(&provider, &self.server_config)
-                                .ok();
+                            let start_result = self.server_controller
+                                .start(&provider, &self.server_config);
+                            if start_result.is_ok() {
+                                let status_arc = self.server_controller.get_status_arc();
+                                self.instance_manager.register_external_instance(
+                                    &self.server_config.model_path,
+                                    &self.selected_provider,
+                                    self.server_config.port,
+                                    self.server_config.context_size,
+                                    &self.log_buffer,
+                                    status_arc,
+                                );
+                            }
                             if !self.server_config.huggingface_id.is_empty() {
                                 self.started_hf_model =
                                     Some(self.server_config.huggingface_id.clone());
@@ -1567,6 +1646,59 @@ impl App {
                 }
             });
         });
+    }
+
+    fn update_gpu_topology_panel(&mut self) {
+        let heterogeneous = self.gpus.len() > 1 && {
+            let caps: Vec<_> = self.gpus.iter().filter_map(|g| g.compute_capability).collect();
+            caps.windows(2).any(|w| w[0] != w[1])
+        };
+
+        self.gpu_topology_panel.heterogeneous = heterogeneous;
+        self.gpu_topology_panel.gpus.clear();
+
+        for gpu in &self.gpus {
+            let tier = match gpu.performance_tier {
+                crate::models::GpuTier::Low => GpuTier::Low,
+                crate::models::GpuTier::Mid => GpuTier::Mid,
+                crate::models::GpuTier::High => GpuTier::High,
+                crate::models::GpuTier::Ultra => GpuTier::Ultra,
+            };
+
+            let (sm_major, sm_minor) = gpu.compute_capability.unwrap_or((0, 0));
+            let sm_version = format!("{}.{}", sm_major, sm_minor);
+
+            let arch_name = match sm_major {
+                8 => "Ampere",
+                9 => "Hopper",
+                10 => "Blackwell",
+                12 => "Rubin",
+                _ => "Unknown",
+            };
+
+            let vram_percent = if gpu.total_vram_mb > 0 {
+                // We don't have used VRAM in GpuInfo, so show 0% as placeholder
+                // In a real implementation, this would come from nvidia-smi polling
+                0.0
+            } else {
+                0.0
+            };
+
+            self.gpu_topology_panel.gpus.push(GpuTopologyEntry {
+                gpu_id: gpu.index,
+                name: gpu.name.clone(),
+                arch: arch_name.to_string(),
+                sm_version,
+                vram_total_gb: gpu.total_vram_mb as f32 / 1024.0,
+                vram_used_gb: 0.0,
+                vram_percent,
+                gpu_util_percent: 0.0,
+                temp_celsius: gpu.temperature_c.map(|t| t as u32).unwrap_or(0),
+                power_watts: 0.0,
+                power_limit_watts: 0.0,
+                tier,
+            });
+        }
     }
 }
 
@@ -1598,6 +1730,18 @@ impl eframe::App for App {
                 ui.separator();
                 if ui.button("GPU Settings").clicked() {
                     self.show_gpu_settings = true;
+                }
+                if ui.button("💡 Recommendations").clicked() {
+                    let model_size = self.selected_model
+                        .and_then(|i| self.models.get(i))
+                        .map(|m| m.size_gb)
+                        .unwrap_or(0.0);
+                    let model_name = self.selected_model
+                        .and_then(|i| self.models.get(i))
+                        .map(|m| m.name.as_str())
+                        .unwrap_or("");
+                    self.recommendation_panel.analyze(&self.gpus, model_size, model_name);
+                    self.recommendation_panel.show = true;
                 }
                 ui.separator();
                 // Use cached stats (updated every ~0.5s in update())
@@ -1827,6 +1971,14 @@ impl eframe::App for App {
                 .default_height(200.0)
                 .show_inside(ui, |ui| {
                     self.render_bottom_panel(ui);
+                });
+
+            egui::SidePanel::right("gpu_topology")
+                .default_width(280.0)
+                .resizable(true)
+                .show_inside(ui, |ui| {
+                    self.update_gpu_topology_panel();
+                    self.gpu_topology_panel.show(ui);
                 });
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
@@ -2347,12 +2499,56 @@ impl eframe::App for App {
             if let Some(info) = get_provider_install_info(provider_id) {
                 egui::Window::new(format!("Setup: {}", info.provider_name))
                     .open(&mut self.show_provider_setup)
-                    .default_width(600.0)
-                    .default_height(400.0)
+                    .default_width(700.0)
+                    .default_height(550.0)
+                    .vscroll(true)
                     .show(ctx, |ui| {
                         ui.heading(format!("{} Setup", info.provider_name));
                         ui.separator();
 
+                        // System Detection Panel
+                        ui.heading("System Detection");
+                        ui.add_space(4.0);
+
+                        let gpus = gpu_detector::detect_gpus();
+                        if gpus.is_empty() {
+                            ui.label("No GPUs detected.");
+                        } else {
+                            ui.label(format!("GPUs Detected: {}", gpus.len()));
+                            ui.add_space(4.0);
+                            egui::Frame::group(ui.style()).show(ui, |ui| {
+                                for gpu in &gpus {
+                                    let cc_str = gpu.compute_capability
+                                        .map(|(maj, min)| format!("SM {}.{}", maj, min))
+                                        .unwrap_or_else(|| "unknown".to_string());
+                                    let tier_str = format!("{:?}", gpu.performance_tier);
+                                    ui.label(format!(
+                                        "  GPU {}: {}  {}  {}  Tier: {}",
+                                        gpu.index, gpu.name, cc_str, gpu.total_vram_mb, tier_str
+                                    ));
+                                }
+                            });
+                        }
+
+                        let is_heterogeneous = gpus.len() > 1
+                            && gpus
+                                .iter()
+                                .filter_map(|g| g.compute_capability)
+                                .collect::<std::collections::HashSet<_>>()
+                                .len() > 1;
+
+                        if is_heterogeneous {
+                            ui.add_space(4.0);
+                            ui.colored_label(
+                                egui::Color32::YELLOW,
+                                "⚠ HETEROGENEOUS CLUSTER DETECTED",
+                            );
+                            ui.label("Mixed architectures detected. Tensor Parallelism will NOT work efficiently.");
+                            ui.label("Recommended: Multi-Instance + Router");
+                        }
+                        ui.separator();
+
+                        // Install Status
                         if installed {
                             ui.colored_label(
                                 egui::Color32::GREEN,
@@ -2364,8 +2560,29 @@ impl eframe::App for App {
                                 format!("✗ {} is NOT installed", info.provider_name),
                             );
                         }
-
                         ui.separator();
+
+                        // Install Mode Selector (only show if not installed)
+                        if !installed {
+                            ui.heading("Installation Mode");
+                            ui.add_space(4.0);
+
+                            if is_heterogeneous {
+                                ui.colored_label(
+                                    egui::Color32::LIGHT_BLUE,
+                                    "● Heterogeneous Build (Multi-Arch) — auto-selected",
+                                );
+                                ui.label("Compiles for ALL detected GPU architectures.");
+                                ui.label("Sets TORCH_CUDA_ARCH_LIST automatically.");
+                                ui.label("Includes safety flags for mixed GPUs. (~15-45min)");
+                            } else {
+                                ui.label("○ Quick Install (Precompiled Wheel)");
+                                ui.label("  Fastest (~30s). Uses pre-built binaries.");
+                            }
+                            ui.separator();
+                        }
+
+                        // Quick Install
                         ui.heading("Quick Install");
                         ui.label(info.simple_description);
                         ui.horizontal(|ui| {
@@ -2376,6 +2593,8 @@ impl eframe::App for App {
                         });
 
                         ui.separator();
+
+                        // Advanced Install
                         ui.heading("Advanced Install");
                         ui.label(info.advanced_description);
                         ui.horizontal(|ui| {
@@ -2386,6 +2605,27 @@ impl eframe::App for App {
                                 });
                             }
                         });
+
+                        // Safety Flags (for heterogeneous setups)
+                        if is_heterogeneous {
+                            ui.separator();
+                            ui.heading("Safety Flags (auto-applied for heterogeneous setup)");
+                            ui.add_space(4.0);
+
+                            match provider_id.as_str() {
+                                "vllm" => {
+                                    ui.label("✓ VLLM_SKIP_P2P_CHECK=1");
+                                    ui.label("  Disables untested direct GPU-to-GPU communication between different architectures.");
+                                    ui.label("✓ --enforce-eager");
+                                    ui.label("  Disables CUDA Graph capture which may fail on mixed-architecture systems.");
+                                }
+                                "sglang" => {
+                                    ui.label("✓ --disable-cuda-graph");
+                                    ui.label("  Prevents CUDA Graph crashes on heterogeneous GPUs.");
+                                }
+                                _ => {}
+                            }
+                        }
                     });
             }
         }
@@ -2484,6 +2724,25 @@ impl eframe::App for App {
                     self.server_config.tokenizer = parsed.tokenizer;
                 }
                 self.show_cmdline_dialog = false;
+            }
+        }
+
+        // Deployment Wizard
+        self.deployment_wizard.show(ctx, &mut self.instance_manager);
+
+        // Recommendation Panel
+        if self.recommendation_panel.show {
+            let mut open = true;
+            egui::Window::new("💡 Smart Recommendations")
+                .open(&mut open)
+                .default_width(650.0)
+                .default_height(500.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    self.recommendation_panel.show(ui);
+                });
+            if !open {
+                self.recommendation_panel.show = false;
             }
         }
     }
