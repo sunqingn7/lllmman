@@ -1,6 +1,6 @@
 use eframe::egui::{self, Color32, FontId, Frame, Margin, Sense, Stroke, Ui, Vec2, Align2, RichText, ScrollArea};
 
-use crate::models::deployment::{DeploymentMode, DeploymentProfile, InstanceConfig, RouterConfig, RouterPolicy, RouterProvider};
+use crate::models::deployment::{DeploymentMode, InstanceConfig, RouterConfig, RouterPolicy, RouterProvider};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WizardStep {
@@ -423,8 +423,8 @@ impl DeploymentWizard {
 
     fn render_navigation(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            if self.step != WizardStep::SelectMode {
-                if ui.button("← Back").clicked() {
+            if self.step != WizardStep::SelectMode
+                && ui.button("← Back").clicked() {
                     self.step = match self.step {
                         WizardStep::ConfigureInstances => WizardStep::SelectMode,
                         WizardStep::ConfigureRouter => WizardStep::ConfigureInstances,
@@ -433,7 +433,6 @@ impl DeploymentWizard {
                     };
                     self.launch_result = None;
                 }
-            }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let can_advance = match self.step {
@@ -443,8 +442,8 @@ impl DeploymentWizard {
                     WizardStep::PreviewAndLaunch => false,
                 };
 
-                if can_advance {
-                    if ui.button("Next →").clicked() {
+                if can_advance
+                    && ui.button("Next →").clicked() {
                         self.step = match self.step {
                             WizardStep::SelectMode => WizardStep::ConfigureInstances,
                             WizardStep::ConfigureInstances => {
@@ -458,7 +457,6 @@ impl DeploymentWizard {
                             _ => self.step,
                         };
                     }
-                }
             });
         });
     }

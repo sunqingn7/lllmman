@@ -112,7 +112,7 @@ impl InstanceManager {
             let reader = BufReader::new(stdout);
             let log = log_buf.clone();
             std::thread::spawn(move || {
-                for line in reader.lines().filter_map(|r| r.ok()) {
+                for line in reader.lines().map_while(|r| r.ok()) {
                     log.push_info(line);
                 }
             });
@@ -123,7 +123,7 @@ impl InstanceManager {
         if let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
             std::thread::spawn(move || {
-                for line in reader.lines().filter_map(|r| r.ok()) {
+                for line in reader.lines().map_while(|r| r.ok()) {
                     let lower = line.to_lowercase();
                     let is_real_error = lower.contains("error:")
                         || (lower.contains("failed") && lower.contains("abort"))
@@ -218,7 +218,7 @@ impl InstanceManager {
             let reader = BufReader::new(stdout);
             let log = log_buf.clone();
             std::thread::spawn(move || {
-                for line in reader.lines().filter_map(|r| r.ok()) {
+                for line in reader.lines().map_while(|r| r.ok()) {
                     log.push_info(line);
                 }
             });
@@ -228,7 +228,7 @@ impl InstanceManager {
         if let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
             std::thread::spawn(move || {
-                for line in reader.lines().filter_map(|r| r.ok()) {
+                for line in reader.lines().map_while(|r| r.ok()) {
                     let lower = line.to_lowercase();
                     if lower.contains("error") {
                         log_buf.push_error(line);

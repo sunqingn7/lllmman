@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, FontId, Frame, Margin, Sense, Stroke, Ui, Vec2, Align2, RichText, ScrollArea};
+use eframe::egui::{self, Color32, Frame, Margin, Stroke, Ui, RichText, ScrollArea};
 
 use crate::services::{RecommendationEngine, Recommendation, RecommendationCategory, RecommendationPriority};
 

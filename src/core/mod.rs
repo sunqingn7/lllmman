@@ -6,7 +6,7 @@ pub mod provider;
 pub mod registry;
 pub mod server;
 
-pub use instance_manager::{InstanceHandle, InstanceManager, InstanceMetrics, InstanceStatus, RouterHandle};
+pub use instance_manager::{InstanceManager, InstanceMetrics, InstanceStatus};
 pub use log_buffer::*;
 pub use provider::DetectedServer;
 pub use provider::ProviderError;

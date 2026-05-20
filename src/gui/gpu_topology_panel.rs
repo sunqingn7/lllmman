@@ -149,7 +149,7 @@ impl GpuTopologyPanel {
         painter.text(
             arch_rect.min,
             Align2::LEFT_TOP,
-            &format!("{} • SM {} • Temp: {}°C", gpu.arch, gpu.sm_version, gpu.temp_celsius),
+            format!("{} • SM {} • Temp: {}°C", gpu.arch, gpu.sm_version, gpu.temp_celsius),
             FontId::new(9.0, FontId::monospace(9.0).family),
             Color32::from_rgb(160, 160, 170),
         );
@@ -182,7 +182,7 @@ impl GpuTopologyPanel {
         painter.text(
             vram_text_rect.min,
             Align2::LEFT_TOP,
-            &format!("VRAM: {:.1}/{:.1} GB ({:.0}%)", gpu.vram_used_gb, gpu.vram_total_gb, gpu.vram_percent),
+            format!("VRAM: {:.1}/{:.1} GB ({:.0}%)", gpu.vram_used_gb, gpu.vram_total_gb, gpu.vram_percent),
             FontId::new(9.0, FontId::monospace(9.0).family),
             Color32::from_rgb(160, 160, 170),
         );
@@ -215,7 +215,7 @@ impl GpuTopologyPanel {
         painter.text(
             util_text_rect.min,
             Align2::LEFT_TOP,
-            &format!("GPU: {:.0}% • Power: {:.0}/{:.0}W", gpu.gpu_util_percent, gpu.power_watts, gpu.power_limit_watts),
+            format!("GPU: {:.0}% • Power: {:.0}/{:.0}W", gpu.gpu_util_percent, gpu.power_watts, gpu.power_limit_watts),
             FontId::new(9.0, FontId::monospace(9.0).family),
             Color32::from_rgb(160, 160, 170),
         );

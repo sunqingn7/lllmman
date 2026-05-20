@@ -17,16 +17,13 @@ pub mod recommendation_engine;
 pub mod recommended_params;
 
 pub use auto_params::{get_system_info_summary, recommend_gpu_layers, calculate_cpu_offload_mode, apply_vllm_smart_config};
-pub use build_script_gen::{generate_launch_script, generate_script_summary};
 pub use cmdline_parser::parse_command_line;
 pub use config_persistence::{save_settings, save_model_config, load_model_config, get_fallback_config, load_provider_settings_for, save_provider_settings_for};
-pub use cuda_compat::{check_cuda_compatibility, CudaCompatibilityReport};
-pub use gpu_arch::{detect_gpu_architectures, is_heterogeneous_cluster, get_combined_arch_list, get_cuda_driver_version, classify_performance_tier, infer_compute_cap_from_name, GpuArchInfo};
-pub use metrics_collector::{MetricsCollector, MetricsSnapshot, InstanceMetricsSnapshot, RouterMetricsSnapshot};
+pub use gpu_arch::GpuArchInfo;
 pub use monitor::{fetch_server_stats, get_system_stats};
 pub use model_downloader::{DownloadManager, DirectUrlDownloader, GitHubReleaseDownloader, HuggingFaceDownloader};
 pub use model_metadata::get_model_metadata;
 pub use process_detector::{detect_running_servers, parse_server_args};
-pub use provider_installer::{get_provider_install_info, check_provider_installed, generate_setup_plan, SetupPlan, InstallMode, SetupCommand};
+pub use provider_installer::{get_provider_install_info, check_provider_installed};
 pub use recommendation_engine::{RecommendationEngine, Recommendation, RecommendationCategory, RecommendationPriority};
 pub use recommended_params::{get_recommended_params, apply_recommended_params};

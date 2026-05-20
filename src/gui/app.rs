@@ -21,30 +21,18 @@ fn open_folder(path: &std::path::Path) -> Result<(), String> {
         }
 
         // Try to use DBus to open the file manager (GNOME/Nautilus)
-        match std::process::Command::new("nautilus")
-            .arg(path)
-            .spawn()
-        {
-            Ok(_) => return Ok(()),
-            Err(_) => {}
+        if std::process::Command::new("nautilus").arg(path).spawn().is_ok() {
+            return Ok(());
         }
 
         // Try KDE's Dolphin
-        match std::process::Command::new("dolphin")
-            .arg(path)
-            .spawn()
-        {
-            Ok(_) => return Ok(()),
-            Err(_) => {}
+        if std::process::Command::new("dolphin").arg(path).spawn().is_ok() {
+            return Ok(());
         }
 
         // Try Thunar (XFCE)
-        match std::process::Command::new("thunar")
-            .arg(path)
-            .spawn()
-        {
-            Ok(_) => return Ok(()),
-            Err(_) => {}
+        if std::process::Command::new("thunar").arg(path).spawn().is_ok() {
+            return Ok(());
         }
     }
 
@@ -1713,12 +1701,12 @@ impl eframe::App for App {
         self.frame_counter = self.frame_counter.wrapping_add(1);
 
         // Throttle expensive operations to every ~1 second (at 60fps)
-        if self.frame_counter % 60 == 0 {
+        if self.frame_counter.is_multiple_of(60) {
             self.server_controller.refresh_external_detection();
         }
 
         // Update cached stats every ~0.5 seconds for smooth display
-        if self.frame_counter % 30 == 0 {
+        if self.frame_counter.is_multiple_of(30) {
             let new_stats = get_system_stats();
             self.cached_stats = Some((self.frame_counter, new_stats));
         }
@@ -1921,7 +1909,7 @@ impl eframe::App for App {
                             let found = provider.scan_models(dir);
                             for model in found {
                                 if model.path.contains(&hf_id)
-                                    || model.name.contains(hf_id.split('/').last().unwrap_or(""))
+                                    || model.name.contains(hf_id.split('/').next_back().unwrap_or(""))
                                 {
                                     if !self.models.iter().any(|m| m.path == model.path) {
                                         self.models.push(model.clone());
@@ -1940,9 +1928,7 @@ impl eframe::App for App {
                 }
 
                 if matches!(current_status, crate::models::ServerStatus::Running)
-                    && self.frame_counter
-                        % (self.provider_settings.heartbeat_interval_secs as u32 * 50)
-                        == 0
+                    && self.frame_counter.is_multiple_of(self.provider_settings.heartbeat_interval_secs as u32 * 50)
                 {
                     if let Some(server_stats) = crate::services::fetch_server_stats(
                         &self.server_config.host,
@@ -2453,7 +2439,7 @@ impl eframe::App for App {
                                                 };
                                                 ui.add(
                                                     egui::ProgressBar::new(progress)
-                                                        .text(&format!("{:.1}%", progress * 100.0)),
+                                                        .text(format!("{:.1}%", progress * 100.0)),
                                                 )
                                             }
                                             crate::core::DownloadStatus::Completed => {

@@ -166,7 +166,7 @@ impl MultiInstanceManagerPanel {
         painter.text(
             min + Vec2::new(8.0, 22.0),
             Align2::LEFT_TOP,
-            &format!("Port: {} | Workers: {}/{} | QPS: {:.1}",
+            format!("Port: {} | Workers: {}/{} | QPS: {:.1}",
                 router.port, router.connected_workers, router.worker_urls.len(), router.total_qps),
             FontId::new(9.0, FontId::monospace(9.0).family),
             Color32::from_rgb(160, 160, 170),
