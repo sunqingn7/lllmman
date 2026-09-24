@@ -122,6 +122,8 @@ pub struct App {
     needs_repaint: Arc<AtomicBool>,
     // Queue for models to delete (collected during UI rendering, processed after)
     models_to_delete: Vec<String>,
+    // Model awaiting delete confirmation in dialog: (path, name)
+    pending_delete: Option<(String, String)>,
     // GPU Topology Panel
     gpu_topology_panel: GpuTopologyPanel,
     // Multi-Instance Manager
@@ -265,6 +267,7 @@ impl App {
             previous_server_status: crate::models::ServerStatus::Stopped,
             needs_repaint: Arc::new(AtomicBool::new(false)),
             models_to_delete: Vec::new(),
+            pending_delete: None,
             gpu_topology_panel: GpuTopologyPanel::new(),
             instance_manager: crate::core::InstanceManager::new(),
             instance_manager_panel: MultiInstanceManagerPanel::new(),
@@ -444,6 +447,195 @@ impl App {
     fn save_settings(&self) {
         if let Err(e) = crate::services::save_settings(&self.settings) {
             eprintln!("Failed to save settings: {}", e);
+        }
+    }
+
+    fn delete_model_files(&mut self, model_path: &str) {
+        let path = std::path::Path::new(model_path);
+
+        let folder_to_delete: Option<std::path::PathBuf> = if path.is_file() {
+            let mut hf_root: Option<std::path::PathBuf> = None;
+            for ancestor in path.ancestors() {
+                let is_hf_root = ancestor
+                    .file_name()
+                    .map(|n| n.to_string_lossy().starts_with("models--"))
+                    .unwrap_or(false);
+                if is_hf_root {
+                    hf_root = Some(ancestor.to_path_buf());
+                    break;
+                }
+            }
+
+            if let Some(hf_root) = hf_root {
+                // HF cache layout: model files are symlinks into blobs/ inside
+                // models--X, so the whole models--X dir must go to free disk space
+                Some(hf_root)
+            } else {
+                let parent = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                let mut roots: Vec<std::path::PathBuf> = Vec::new();
+                if let Some(cache) = dirs::cache_dir() {
+                    roots.push(cache.join("llama.cpp"));
+                    roots.push(cache.join("huggingface").join("hub"));
+                }
+                if let Some(home) = dirs::home_dir() {
+                    roots.push(home.join("models"));
+                }
+                roots.push(std::path::PathBuf::from(&self.settings.download_directory));
+                for d in &self.settings.scan_directories {
+                    roots.push(std::path::PathBuf::from(d));
+                }
+
+                if roots.iter().any(|r| r == &parent) {
+                    // Shared flat folder: only remove this one file
+                    Some(path.to_path_buf())
+                } else {
+                    // Per-model folder
+                    Some(parent)
+                }
+            }
+        } else if model_path.contains('/') && !model_path.starts_with('/') {
+            // HuggingFace repo ID (sglang/vllm style): resolve its cache directory
+            let sglang_path = crate::providers::sglang::find_huggingface_model_path(model_path);
+            let vllm_path = crate::providers::vllm::find_huggingface_model_path(model_path);
+            let cache_path = sglang_path.or(vllm_path);
+
+            if let Some(found) = cache_path {
+                let found_path = std::path::Path::new(&found);
+                let mut hf_root: Option<std::path::PathBuf> = None;
+                for ancestor in found_path.ancestors() {
+                    let is_hf_root = ancestor
+                        .file_name()
+                        .map(|n| n.to_string_lossy().starts_with("models--"))
+                        .unwrap_or(false);
+                    if is_hf_root {
+                        hf_root = Some(ancestor.to_path_buf());
+                        break;
+                    }
+                }
+                hf_root.or_else(|| found_path.parent().map(|p| p.to_path_buf()))
+            } else {
+                dirs::cache_dir()
+                    .map(|p| p.join("huggingface").join("hub"))
+                    .filter(|p| p.exists())
+                    .map(|cache_dir| {
+                        cache_dir.join(format!("models--{}", model_path.replace('/', "--")))
+                    })
+                    .filter(|p| p.exists())
+            }
+        } else {
+            None
+        };
+
+        if let Some(model_dir) = folder_to_delete {
+            self.log_buffer
+                .push_info(format!("[Debug] Attempting to delete: {}", model_dir.display()));
+            let removed = if model_dir.is_file() {
+                std::fs::remove_file(&model_dir)
+            } else {
+                std::fs::remove_dir_all(&model_dir)
+            };
+            match removed {
+                Ok(_) => {
+                    self.log_buffer.push_info(format!(
+                        "Deleted model files: {}",
+                        model_dir.display()
+                    ));
+                    self.models_to_delete.push(model_path.to_string());
+                }
+                Err(e) => {
+                    self.log_buffer.push_error(format!(
+                        "Failed to delete model directory '{}': {}",
+                        model_dir.display(),
+                        e
+                    ));
+                }
+            }
+        } else {
+            self.log_buffer.push_error(format!(
+                "Could not determine folder to delete for: {}",
+                model_path
+            ));
+        }
+    }
+
+    fn show_delete_confirmation(&mut self, ctx: &egui::Context) {
+        let Some((_, model_name)) = self.pending_delete.clone() else {
+            return;
+        };
+
+        let mut cancel = false;
+        let mut do_delete = false;
+
+        let mut bg_clicked = false;
+        egui::Area::new(egui::Id::new("delete_confirm_bg"))
+            .default_pos(egui::Pos2::ZERO)
+            .show(ctx, |ui| {
+                let screen = ctx.screen_rect();
+                let bg = ui.allocate_rect(screen, egui::Sense::click_and_drag());
+                ui.painter().rect_filled(
+                    screen,
+                    egui::Rounding::ZERO,
+                    egui::Color32::from_black_alpha(120),
+                );
+                if bg.clicked() {
+                    bg_clicked = true;
+                }
+            });
+        cancel |= bg_clicked;
+
+        egui::Window::new("🗑️ Delete Model")
+            .id(egui::Id::new("delete_confirm_win"))
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!("Delete '{}' from system?", model_name))
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "The model files will be permanently deleted. This cannot be undone.",
+                    )
+                    .weak(),
+                );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_sized([80.0, 28.0], egui::Button::new(egui::RichText::new("Yes").strong()))
+                        .clicked()
+                    {
+                        do_delete = true;
+                    }
+                    if ui
+                        .add_sized([80.0, 28.0], egui::Button::new("Cancel"))
+                        .clicked()
+                    {
+                        cancel = true;
+                    }
+                });
+            });
+
+        ctx.move_to_top(egui::LayerId::new(
+            egui::Order::Middle,
+            egui::Id::new("delete_confirm_win"),
+        ));
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            cancel = true;
+        }
+
+        if cancel {
+            self.pending_delete = None;
+        }
+
+        if do_delete {
+            if let Some((path, name)) = self.pending_delete.take() {
+                self.delete_model_files(&path);
+                self.log_buffer
+                    .push_info(format!("Delete confirmed by user for: {}", name));
+            }
         }
     }
 
@@ -683,6 +875,43 @@ impl App {
                             let frame_shape = card_frame.paint(response.rect);
                             ui.painter().add(frame_shape);
 
+                            // Close (x) button in top-right corner of the card
+                            let close_size = 18.0;
+                            let close_rect = egui::Rect::from_min_size(
+                                egui::pos2(
+                                    response.rect.max.x - close_size - 5.0,
+                                    response.rect.min.y + 5.0,
+                                ),
+                                egui::vec2(close_size, close_size),
+                            );
+                            let close_resp = ui.interact(
+                                close_rect,
+                                ui.id().with(("model_close", i)),
+                                egui::Sense::click(),
+                            );
+                            if close_resp.hovered() {
+                                ui.painter().circle_filled(
+                                    close_rect.center(),
+                                    close_size * 0.55,
+                                    egui::Color32::from_rgb(150, 45, 49),
+                                );
+                            }
+                            ui.painter().text(
+                                close_rect.center(),
+                                egui::Align2::CENTER_CENTER,
+                                "×",
+                                egui::FontId::new(11.0, egui::FontFamily::Proportional),
+                                if close_resp.hovered() {
+                                    egui::Color32::WHITE
+                                } else {
+                                    subtext_color
+                                },
+                            );
+                            if close_resp.clicked() || close_resp.secondary_clicked() {
+                                self.pending_delete =
+                                    Some((model.path.clone(), model.name.clone()));
+                            }
+
         // Extract filename for display (shows quantization difference like Q4_K_M vs UD-Q5_K_XL)
         let filename = std::path::Path::new(&model.path)
             .file_name()
@@ -760,7 +989,7 @@ impl App {
                     subtext_color,
                 );
 
-                if response.clicked() {
+                if response.clicked() && !close_resp.hovered() {
                                 if let Some(old_i) = self.selected_model {
                                     if let Some(old_model) = filtered.get(old_i) {
                                         save_model_config(
@@ -1037,73 +1266,9 @@ impl App {
 
             ui.separator();
 
-            // Delete option
+            // Delete option (confirmation dialog handles the actual deletion)
             if ui.button("🗑️ Delete Model").clicked() {
-                // Determine the actual folder to delete
-                let path_exists = std::path::Path::new(&model_path_clone).exists();
-                let looks_like_hf_id = model_path_clone.contains('/')
-                    && !model_path_clone.starts_with('/')
-                    && !path_exists;
-
-                let folder_to_delete: Option<std::path::PathBuf> = if looks_like_hf_id {
-                    // For HF models, try to find the cache directory
-                    let sglang_path = crate::providers::sglang::find_huggingface_model_path(&model_path_clone);
-                    let vllm_path = crate::providers::vllm::find_huggingface_model_path(&model_path_clone);
-                    let cache_path = sglang_path.or(vllm_path);
-
-                    if let Some(ref path) = cache_path {
-                        // Get the parent of the found path (the snapshot folder)
-                        std::path::Path::new(path).parent().map(|p| p.to_path_buf())
-                    } else {
-                        // Try the HF cache directory directly
-                        dirs::cache_dir()
-                            .map(|p| p.join("huggingface").join("hub"))
-                            .filter(|p| p.exists())
-                            .map(|cache_dir| cache_dir.join(format!("models--{}", model_path_clone.replace('/', "--"))))
-                            .filter(|p| p.exists())
-                    }
-                } else if path_exists {
-                    // Regular file path - get the parent directory
-                    std::path::Path::new(&model_path_clone).parent().map(|p| p.to_path_buf())
-                } else {
-                    None
-                };
-
-                if let Some(model_dir) = folder_to_delete {
-                    self.log_buffer.push_info(format!(
-                        "[Debug] Attempting to delete: {}",
-                        model_dir.display()
-                    ));
-                    if model_dir.exists() {
-                        match std::fs::remove_dir_all(&model_dir) {
-                            Ok(_) => {
-                                self.log_buffer.push_info(format!(
-                                    "Deleted model directory: {}",
-                                    model_dir.display()
-                                ));
-                                // Queue model path for deletion after context menu closes
-                                self.models_to_delete.push(model_path_clone.clone());
-                            }
-                            Err(e) => {
-                                self.log_buffer.push_error(format!(
-                                    "Failed to delete model directory '{}': {}",
-                                    model_dir.display(),
-                                    e
-                                ));
-                            }
-                        }
-                    } else {
-                        self.log_buffer.push_error(format!(
-                            "Cannot delete - folder does not exist: {}",
-                            model_dir.display()
-                        ));
-                    }
-                } else {
-                    self.log_buffer.push_error(format!(
-                        "Could not determine folder to delete for: {}",
-                        model_path_clone
-                    ));
-                }
+                self.pending_delete = Some((model_path_clone.clone(), model_name_clone.clone()));
                 ui.close_menu();
             }
         });
@@ -2713,6 +2878,9 @@ impl eframe::App for App {
                 self.show_cmdline_dialog = false;
             }
         }
+
+        // Delete model confirmation dialog
+        self.show_delete_confirmation(ctx);
 
         // Deployment Wizard
         self.deployment_wizard.show(ctx, &mut self.instance_manager);
