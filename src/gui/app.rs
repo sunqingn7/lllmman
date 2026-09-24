@@ -92,7 +92,7 @@ pub struct App {
     server_controller: ServerController,
     provider_settings: ProviderSettings,
     settings: AppSettings,
-    selected_model: Option<usize>,
+    selected_model: Option<String>,
     selected_provider: String,
     show_download: bool,
     show_gpu_settings: bool,
@@ -124,6 +124,10 @@ pub struct App {
     models_to_delete: Vec<String>,
     // Model awaiting delete confirmation in dialog: (path, name)
     pending_delete: Option<(String, String)>,
+    // Startup sanity check results
+    startup_issues: Vec<crate::services::model_validator::SanityIssue>,
+    show_startup_check: bool,
+    refresh_states: Arc<std::sync::Mutex<std::collections::HashMap<String, RefreshState>>>,
     // GPU Topology Panel
     gpu_topology_panel: GpuTopologyPanel,
     // Multi-Instance Manager
@@ -145,6 +149,13 @@ enum MainView {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BottomView {
     Log,
+}
+
+#[derive(Clone)]
+enum RefreshState {
+    Running { downloaded: u64, total: u64 },
+    Done,
+    Failed(String),
 }
 
 impl App {
@@ -183,10 +194,6 @@ impl App {
         log::info!("Selected provider for startup: {}", selected_provider);
 
         let (models, server_config) = Self::build_for_provider(&selected_provider, &settings);
-
-        let selected_model = models.iter().position(|m| {
-            m.path == server_config.model_path || m.path.contains(&server_config.model_path)
-        });
 
         let provider = Self::get_provider_static(&selected_provider);
         let provider_defaults = provider.default_settings();
@@ -229,6 +236,51 @@ impl App {
         server_controller.set_provider_settings(provider_settings.clone());
         let log_buffer = server_controller.get_log_buffer();
 
+        // Startup sanity check: verify model existence and file completeness
+        let sanity = crate::services::model_validator::check_models(models);
+        let models = sanity.valid;
+        let startup_issues = sanity.broken;
+        log_buffer.push_info(format!(
+            "[Sanity check] {} model(s) verified, {} broken",
+            models.len(),
+            startup_issues.len()
+        ));
+        for issue in &startup_issues {
+            log_buffer.push_warn(format!(
+                "[Sanity check] Hid broken model '{}' ({}): {}",
+                issue.name, issue.path, issue.reason
+            ));
+        }
+        let show_startup_check = !startup_issues.is_empty();
+
+        let selected_model = models
+            .iter()
+            .find(|m| m.path == server_config.model_path || m.path.contains(&server_config.model_path))
+            .map(|m| m.path.clone());
+
+        let server_running = running_servers
+            .iter()
+            .any(|s| s.provider_id == selected_provider);
+        let mut instance_manager = crate::core::InstanceManager::new();
+        let main_view = if server_running {
+            log_buffer.push_info(format!(
+                "[Startup] Running {} server detected: auto-selected '{}' and opened Performance view",
+                selected_provider, server_config.model_path
+            ));
+            let status_arc = server_controller.get_status_arc();
+            instance_manager.register_external_instance(
+                &server_config.model_path,
+                &selected_provider,
+                server_config.port,
+                server_config.context_size,
+                &log_buffer,
+                status_arc,
+            );
+            MainView::PerformanceMonitor
+        } else {
+            MainView::ServerConfig
+        };
+
         Self {
             models,
             gpus,
@@ -268,13 +320,16 @@ impl App {
             needs_repaint: Arc::new(AtomicBool::new(false)),
             models_to_delete: Vec::new(),
             pending_delete: None,
+            startup_issues,
+            show_startup_check,
+            refresh_states: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             gpu_topology_panel: GpuTopologyPanel::new(),
-            instance_manager: crate::core::InstanceManager::new(),
+            instance_manager,
             instance_manager_panel: MultiInstanceManagerPanel::new(),
             deployment_wizard: DeploymentWizard::new(gpu_count, heterogeneous),
             performance_monitor: PerformanceMonitorPanel::new(),
             recommendation_panel: RecommendationPanel::new(),
-            main_view: MainView::ServerConfig,
+            main_view,
         }
     }
 
@@ -340,6 +395,18 @@ impl App {
                 if detected_config.enable_thinking.is_some() {
                     server_config.enable_thinking = detected_config.enable_thinking;
                 }
+                if !detected_config.additional_args.is_empty() {
+                    server_config.additional_args = detected_config.additional_args;
+                }
+                if !detected_config.cache_type_k.is_empty()
+                    && detected_config.cache_type_k != "q4_0"
+                {
+                    server_config.cache_type_k = detected_config.cache_type_k;
+                    server_config.cache_type_v = detected_config.cache_type_v;
+                }
+                if !detected_config.tokenizer.is_empty() {
+                    server_config.tokenizer = detected_config.tokenizer;
+                }
 
                 break;
             }
@@ -381,9 +448,9 @@ impl App {
     }
 
     fn switch_provider(&mut self, new_provider_id: &str) {
-        if let Some(old_i) = self.selected_model {
-            if let Some(model) = self.models.get(old_i) {
-                save_model_config(&model.path, &self.server_config, new_provider_id).ok();
+        if let Some(old_path) = &self.selected_model {
+            if self.models.iter().any(|m| &m.path == old_path) {
+                save_model_config(old_path, &self.server_config, new_provider_id).ok();
             }
         }
 
@@ -450,7 +517,7 @@ impl App {
         }
     }
 
-    fn delete_model_files(&mut self, model_path: &str) {
+    fn delete_model_files(&mut self, model_path: &str) -> bool {
         let path = std::path::Path::new(model_path);
 
         let folder_to_delete: Option<std::path::PathBuf> = if path.is_file() {
@@ -493,8 +560,23 @@ impl App {
                     Some(parent)
                 }
             }
-        } else if model_path.contains('/') && !model_path.starts_with('/') {
-            // HuggingFace repo ID (sglang/vllm style): resolve its cache directory
+        } else if model_path.starts_with('/') {
+            // File missing: if it lived under an HF cache layout, remove the whole repo dir
+            let mut hf_root: Option<std::path::PathBuf> = None;
+            for ancestor in path.ancestors() {
+                let is_hf_root = ancestor
+                    .file_name()
+                    .map(|n| n.to_string_lossy().starts_with("models--"))
+                    .unwrap_or(false);
+                if is_hf_root {
+                    hf_root = Some(ancestor.to_path_buf());
+                    break;
+                }
+            }
+            hf_root.filter(|r| r.exists())
+        } else if !model_path.starts_with('/') && !model_path.is_empty() {
+            // HuggingFace repo ID (sglang/vllm style, with or without org):
+            // resolve its cache directory
             let sglang_path = crate::providers::sglang::find_huggingface_model_path(model_path);
             let vllm_path = crate::providers::vllm::find_huggingface_model_path(model_path);
             let cache_path = sglang_path.or(vllm_path);
@@ -541,6 +623,7 @@ impl App {
                         model_dir.display()
                     ));
                     self.models_to_delete.push(model_path.to_string());
+                    true
                 }
                 Err(e) => {
                     self.log_buffer.push_error(format!(
@@ -548,6 +631,7 @@ impl App {
                         model_dir.display(),
                         e
                     ));
+                    false
                 }
             }
         } else {
@@ -555,6 +639,7 @@ impl App {
                 "Could not determine folder to delete for: {}",
                 model_path
             ));
+            false
         }
     }
 
@@ -636,6 +721,259 @@ impl App {
                 self.log_buffer
                     .push_info(format!("Delete confirmed by user for: {}", name));
             }
+        }
+    }
+
+    fn poll_refresh_states(&mut self) {
+        let finished: Vec<(String, RefreshState)> = {
+            let map = self.refresh_states.lock().unwrap();
+            map.iter()
+                .filter_map(|(k, v)| match v {
+                    RefreshState::Done => Some((k.clone(), RefreshState::Done)),
+                    RefreshState::Failed(s) => Some((k.clone(), RefreshState::Failed(s.clone()))),
+                    _ => None,
+                })
+                .collect()
+        };
+
+        for (path, state) in finished {
+            if let RefreshState::Done = state {
+                match Self::get_provider_static("llama.cpp").add_model(&path) {
+                    Ok(info) => {
+                        if !self.models.iter().any(|m| m.path == path) {
+                            self.models.push(info);
+                        }
+                        self.startup_issues.retain(|i| i.path != path);
+                        self.refresh_states.lock().unwrap().remove(&path);
+                        self.log_buffer
+                            .push_info(format!("[Sanity check] Repaired model: {}", path));
+                    }
+                    Err(e) => {
+                        self.log_buffer.push_error(format!(
+                            "[Sanity check] Download completed but model still invalid: {}",
+                            path
+                        ));
+                        self.refresh_states.lock().unwrap().insert(
+                            path,
+                            RefreshState::Failed(format!("file restored but invalid: {:?}", e)),
+                        );
+                    }
+                }
+            }
+        }
+
+        if self.startup_issues.is_empty() {
+            self.show_startup_check = false;
+        }
+    }
+
+    fn start_model_refresh(&mut self, issue: &crate::services::model_validator::SanityIssue) {
+        let url = match refresh_url_for(&issue.path) {
+            Some(u) => u,
+            None => return,
+        };
+        let dest = issue.path.clone();
+        let key = issue.path.clone();
+        let states = self.refresh_states.clone();
+        states
+            .lock()
+            .unwrap()
+            .insert(key.clone(), RefreshState::Running { downloaded: 0, total: 0 });
+
+        std::thread::spawn(move || {
+            let result: Result<(), String> = (|| {
+                let client = reqwest::blocking::Client::builder()
+                    .user_agent("lllmman")
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                let mut resp = client
+                    .get(&url)
+                    .send()
+                    .map_err(|e| e.to_string())?
+                    .error_for_status()
+                    .map_err(|e| format!("server returned {}", e))?;
+                let total = resp.content_length().unwrap_or(0);
+
+                if let Some(parent) = std::path::Path::new(&dest).parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                }
+                let tmp = format!("{}.part", dest);
+                let mut file =
+                    std::io::BufWriter::new(std::fs::File::create(&tmp).map_err(|e| e.to_string())?);
+                let mut buf = [0u8; 262144];
+                let mut downloaded = 0u64;
+                loop {
+                    let n = std::io::Read::read(&mut resp, &mut buf).map_err(|e| e.to_string())?;
+                    if n == 0 {
+                        break;
+                    }
+                    std::io::Write::write_all(&mut file, &buf[..n]).map_err(|e| e.to_string())?;
+                    downloaded += n as u64;
+                    let mut m = states.lock().unwrap();
+                    m.insert(key.clone(), RefreshState::Running { downloaded, total });
+                }
+                drop(file);
+                std::fs::rename(&tmp, &dest).map_err(|e| e.to_string())?;
+                Ok(())
+            })();
+
+            let mut m = states.lock().unwrap();
+            match result {
+                Ok(()) => {
+                    m.insert(key, RefreshState::Done);
+                }
+                Err(e) => {
+                    m.insert(key, RefreshState::Failed(e));
+                }
+            }
+        });
+
+        self.log_buffer.push_info(format!(
+            "[Sanity check] Re-downloading missing files for '{}'",
+            issue.name
+        ));
+    }
+
+    fn show_startup_check_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_startup_check {
+            return;
+        }
+
+        self.poll_refresh_states();
+        let states_snapshot: std::collections::HashMap<String, RefreshState> =
+            self.refresh_states.lock().unwrap().clone();
+
+        let mut close = false;
+        let mut delete_idx: Option<usize> = None;
+        let mut refresh_idx: Option<usize> = None;
+
+        egui::Window::new("🩺 Startup Model Check")
+            .id(egui::Id::new("startup_check_win"))
+            .collapsible(false)
+            .resizable(false)
+            .movable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} model(s) failed the startup sanity check and are hidden from the list:",
+                        self.startup_issues.len()
+                    ))
+                    .strong(),
+                );
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, true])
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for (i, issue) in self.startup_issues.iter().enumerate() {
+                            ui.push_id(("startup_issue", i), |ui| {
+                                ui.strong(&issue.name);
+                                ui.label(
+                                    egui::RichText::new(&issue.reason)
+                                        .color(egui::Color32::from_rgb(220, 90, 90)),
+                                );
+                                ui.label(egui::RichText::new(&issue.path).small().weak());
+                                ui.horizontal(|ui| {
+                                    if ui.button("🗑 Delete").clicked() {
+                                        delete_idx = Some(i);
+                                    }
+                                    match states_snapshot.get(&issue.path) {
+                                        None => {
+                                            let refreshable = refresh_url_for(&issue.path).is_some();
+                                            let btn = ui.add_enabled(
+                                                refreshable,
+                                                egui::Button::new("🔄 Refresh"),
+                                            );
+                                            if !refreshable {
+                                                btn.on_disabled_hover_text(
+                                                    "source file location unknown",
+                                                );
+                                            } else if btn.clicked() {
+                                                refresh_idx = Some(i);
+                                            }
+                                        }
+                                        Some(RefreshState::Running { downloaded, total }) => {
+                                            let frac = if *total > 0 {
+                                                *downloaded as f32 / *total as f32
+                                            } else {
+                                                0.0
+                                            };
+                                            ui.add(
+                                                egui::ProgressBar::new(frac).text(format!(
+                                                    "{:.1} MB / {}",
+                                                    *downloaded as f64 / 1_048_576.0,
+                                                    if *total > 0 {
+                                                        format!("{:.1} MB", *total as f64 / 1_048_576.0)
+                                                    } else {
+                                                        "?".to_string()
+                                                    }
+                                                )),
+                                            );
+                                        }
+                                        Some(RefreshState::Done) => {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(90, 200, 90),
+                                                "✓ restored",
+                                            );
+                                        }
+                                        Some(RefreshState::Failed(err)) => {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "download failed: {}",
+                                                    err
+                                                ))
+                                                .color(egui::Color32::from_rgb(220, 90, 90))
+                                                .small(),
+                                            );
+                                            if ui.button("🔄 Retry").clicked() {
+                                                refresh_idx = Some(i);
+                                            }
+                                        }
+                                    }
+                                });
+                                if i + 1 < self.startup_issues.len() {
+                                    ui.separator();
+                                }
+                            });
+                        }
+                    });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            "Delete removes the model files; Refresh re-downloads the missing file.",
+                        )
+                        .weak(),
+                    );
+                    if ui.button("OK").clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        ctx.move_to_top(egui::LayerId::new(
+            egui::Order::Middle,
+            egui::Id::new("startup_check_win"),
+        ));
+
+        if let Some(i) = delete_idx {
+            let issue = self.startup_issues.remove(i);
+            if self.delete_model_files(&issue.path) {
+                self.log_buffer.push_info(format!(
+                    "[Sanity check] Deleted broken model: {}",
+                    issue.name
+                ));
+            }
+            self.refresh_states.lock().unwrap().remove(&issue.path);
+        }
+        if let Some(i) = refresh_idx {
+            let issue = self.startup_issues[i].clone();
+            self.start_model_refresh(&issue);
+        }
+
+        if close || self.startup_issues.is_empty() {
+            self.show_startup_check = false;
         }
     }
 
@@ -832,7 +1170,8 @@ impl App {
                 ui.push_id("model_list", |ui| {
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         for (i, model) in filtered.iter().enumerate() {
-                            let is_selected = self.selected_model == Some(i);
+                            let is_selected =
+                                self.selected_model.as_deref() == Some(model.path.as_str());
 
                             let bg_color = if is_selected {
                                 egui::Color32::from_rgb(40, 44, 52)
@@ -990,18 +1329,16 @@ impl App {
                 );
 
                 if response.clicked() && !close_resp.hovered() {
-                                if let Some(old_i) = self.selected_model {
-                                    if let Some(old_model) = filtered.get(old_i) {
-                                        save_model_config(
-                                            &old_model.path,
-                                            &self.server_config,
-                                            &self.selected_provider,
-                                        )
-                                        .ok();
-                                    }
+                                if let Some(old_path) = self.selected_model.clone() {
+                                    save_model_config(
+                                        &old_path,
+                                        &self.server_config,
+                                        &self.selected_provider,
+                                    )
+                                    .ok();
                                 }
 
-                self.selected_model = Some(i);
+                self.selected_model = Some(model.path.clone());
                 self.server_config.model_path = model.path.clone();
 
                 // Auto-detect mmproj for llama.cpp models
@@ -1283,12 +1620,10 @@ impl App {
         let to_delete: Vec<String> = std::mem::take(&mut self.models_to_delete);
         for path in to_delete {
             if let Some(pos) = self.models.iter().position(|m| m.path == path) {
-                self.models.remove(pos);
-                if self.selected_model == Some(pos) {
+                let removed = self.models.remove(pos);
+                if self.selected_model.as_deref() == Some(removed.path.as_str()) {
                     self.selected_model = None;
                     self.server_config.model_path.clear();
-                } else if self.selected_model.map(|s| s > pos).unwrap_or(false) {
-                    self.selected_model = self.selected_model.map(|s| s - 1);
                 }
             }
         }
@@ -1692,6 +2027,16 @@ impl App {
             ui.text_edit_singleline(&mut self.server_config.additional_args);
             ui.end_row();
 
+            ui.label("Environment Variables:")
+                .on_hover_text(
+                    "Space-separated KEY=VALUE pairs passed to the server process,\n\
+                     e.g. CUDA_VISIBLE_DEVICES=0 VLLM_LOGGING_LEVEL=DEBUG",
+                );
+            let env_resp = ui.text_edit_singleline(&mut self.server_config.environment);
+            env_resp
+                .on_hover_text("Space-separated KEY=VALUE pairs passed to the server process");
+            ui.end_row();
+
             // Show mmproj path for multimodal models (only for llama.cpp)
             if self.selected_provider == "llama.cpp" {
                 ui.label("Vision Model:");
@@ -1781,15 +2126,12 @@ impl App {
 
                 if ui.button("Recommended").clicked() {
                     let model_path = &self.server_config.model_path;
-                    let quantization = if let Some(idx) = self.selected_model {
-                        if let Some(model) = self.models.get(idx) {
-                            &model.quantization
-                        } else {
-                            "q4_0"
-                        }
-                    } else {
-                        "q4_0"
-                    };
+                    let quantization = self
+                        .selected_model
+                        .as_ref()
+                        .and_then(|p| self.models.iter().find(|m| &m.path == p))
+                        .map(|m| m.quantization.as_str())
+                        .unwrap_or("q4_0");
                     let params = crate::services::get_recommended_params(model_path, quantization);
                     crate::services::apply_recommended_params(&mut self.server_config, &params);
                 }
@@ -1886,15 +2228,13 @@ impl eframe::App for App {
                     self.show_gpu_settings = true;
                 }
                 if ui.button("💡 Recommendations").clicked() {
-                    let model_size = self.selected_model
-                        .and_then(|i| self.models.get(i))
-                        .map(|m| m.size_gb)
-                        .unwrap_or(0.0);
-                    let model_name = self.selected_model
-                        .and_then(|i| self.models.get(i))
-                        .map(|m| m.name.as_str())
-                        .unwrap_or("");
-                    self.recommendation_panel.analyze(&self.gpus, model_size, model_name);
+                    let (model_size, model_name) = self
+                        .selected_model
+                        .as_ref()
+                        .and_then(|p| self.models.iter().find(|m| &m.path == p))
+                        .map(|m| (m.size_gb, m.name.clone()))
+                        .unwrap_or((0.0, String::new()));
+                    self.recommendation_panel.analyze(&self.gpus, model_size, &model_name);
                     self.recommendation_panel.show = true;
                 }
                 ui.separator();
@@ -2083,8 +2423,7 @@ impl eframe::App for App {
                                         self.server_config.model_path = model.path.clone();
                                         self.server_config.huggingface_id = String::new();
                                         self.started_hf_model = None;
-                                        self.selected_model =
-                                            self.models.iter().position(|m| m.path == model.path);
+                                        self.selected_model = Some(model.path.clone());
                                     }
                                 }
                             }
@@ -2882,6 +3221,9 @@ impl eframe::App for App {
         // Delete model confirmation dialog
         self.show_delete_confirmation(ctx);
 
+        // Startup sanity check report dialog
+        self.show_startup_check_dialog(ctx);
+
         // Deployment Wizard
         self.deployment_wizard.show(ctx, &mut self.instance_manager);
 
@@ -2903,6 +3245,25 @@ impl eframe::App for App {
     }
 }
 
+fn refresh_url_for(path: &str) -> Option<String> {
+    let p = std::path::Path::new(path);
+    let comps: Vec<String> = p
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let idx = comps.iter().rposition(|c| c.starts_with("models--"))?;
+    if comps.get(idx + 1).map(|s| s.as_str()) != Some("snapshots") {
+        return None;
+    }
+    let rev = comps.get(idx + 2)?;
+    if idx + 3 >= comps.len() {
+        return None;
+    }
+    let rel = comps[idx + 3..].join("/");
+    let repo = comps[idx].trim_start_matches("models--").replace("--", "/");
+    Some(format!("https://huggingface.co/{}/resolve/{}/{}", repo, rev, rel))
+}
+
 fn temp_color(temp: f32) -> egui::Color32 {
     if temp < 50.0 {
         egui::Color32::from_rgb(0, 200, 0)
@@ -2920,5 +3281,44 @@ fn usage_color(percent: f32) -> egui::Color32 {
         egui::Color32::from_rgb(255, 200, 0)
     } else {
         egui::Color32::from_rgb(255, 50, 50)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::refresh_url_for;
+
+    #[test]
+    fn hf_layout_path_maps_to_resolve_url() {
+        let url = refresh_url_for(
+            "/home/user/.cache/huggingface/hub/models--unsloth--Qwen3-4B-GGUF/snapshots/abc123/Qwen3-4B-Q4_K_M.gguf",
+        )
+        .unwrap();
+        assert_eq!(
+            url,
+            "https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/abc123/Qwen3-4B-Q4_K_M.gguf"
+        );
+    }
+
+    #[test]
+    fn nested_part_path_maps_to_resolve_url() {
+        let url = refresh_url_for(
+            "/cache/hub/models--unsloth--MiniMax-M2.5-GGUF/snapshots/def456/MXFP4_MOE/part-00001-of-00004.gguf",
+        )
+        .unwrap();
+        assert_eq!(
+            url,
+            "https://huggingface.co/unsloth/MiniMax-M2.5-GGUF/resolve/def456/MXFP4_MOE/part-00001-of-00004.gguf"
+        );
+    }
+
+    #[test]
+    fn non_hf_layout_returns_none() {
+        assert!(refresh_url_for("/home/user/models/model.gguf").is_none());
+        assert!(refresh_url_for("org/model-name").is_none());
+        assert!(refresh_url_for(
+            "/cache/hub/models--org--repo/snapshots/rev"
+        )
+        .is_none());
     }
 }

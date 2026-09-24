@@ -11,6 +11,7 @@ pub mod metrics_collector;
 pub mod monitor;
 pub mod model_downloader;
 pub mod model_metadata;
+pub mod model_validator;
 pub mod process_detector;
 pub mod provider_installer;
 pub mod recommendation_engine;

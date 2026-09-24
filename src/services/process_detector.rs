@@ -74,3 +74,24 @@ mod tests {
         assert_eq!(config.host, "127.0.0.1");
     }
 }
+#[cfg(test)]
+mod vllm_detect_tests {
+    use super::*;
+
+    #[test]
+    fn parse_live_vllm_command() {
+        crate::providers::register_all_providers();
+        let cmd = r#"20584 /home/qing/Project/vllm/.venv/bin/python3 /home/qing/Project/vllm/.venv/bin/vllm serve RadixArk/Qwen3.8-Flash-Next-NVFP4 --served-model-name Qwen/Qwen3.8-Flash-Next --host 0.0.0.0 --port 8000 --max-model-len 262144 --gpu-memory-utilization 0.96 --tensor-parallel-size 1 --distributed-executor-backend mp --max-num-seqs 2 --max-num-batched-tokens 8192 --kv-cache-dtype auto --enable-prefix-caching --no-enable-flashinfer-autotune --speculative-config {"method":"mtp","num_speculative_tokens":3} --enable-auto-tool-choice --tool-call-parser qwen3_coder --reasoning-parser qwen3"#;
+        let c = parse_server_args("vllm", cmd);
+        println!("model={} ctx={} batch={} port={} host={} gmulayer={} cache={} extra=[{}]",
+            c.model_path, c.context_size, c.batch_size, c.port, c.host, c.gpu_layers, c.cache_type_k, c.additional_args);
+        assert_eq!(c.model_path, "RadixArk/Qwen3.8-Flash-Next-NVFP4");
+        assert_eq!(c.context_size, 262144);
+        assert_eq!(c.batch_size, 8192);
+        assert_eq!(c.port, 8000);
+        assert_eq!(c.gpu_layers, 96);
+        assert_eq!(c.cache_type_k, "auto");
+        assert!(c.additional_args.contains("--max-num-seqs 2"));
+        assert!(c.additional_args.contains("--tool-call-parser qwen3_coder"));
+    }
+}

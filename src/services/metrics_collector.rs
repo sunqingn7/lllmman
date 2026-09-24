@@ -141,7 +141,7 @@ impl MetricsCollector {
 }
 
 /// Fetch metrics from a running instance's /stats endpoint.
-fn fetch_instance_metrics(port: u16) -> Option<InstanceMetrics> {
+pub fn fetch_instance_metrics(port: u16) -> Option<InstanceMetrics> {
     let url = format!("http://127.0.0.1:{}/stats", port);
 
     let response = reqwest::blocking::Client::new()

@@ -108,6 +108,7 @@ impl LlmProvider for SglangProvider {
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
+        cmd.envs(crate::core::parse_env_pairs(&config.environment));
 
         cmd.spawn().map_err(ProviderError::from)
     }

@@ -167,6 +167,8 @@ pub struct ProviderConfig {
     pub tokenizer: String,
     #[serde(default)]
     pub mmproj_path: String,
+    #[serde(default)]
+    pub environment: String,
 }
 
 impl Default for ProviderConfig {
@@ -198,8 +200,23 @@ impl Default for ProviderConfig {
             enable_thinking: None,
             tokenizer: String::new(),
             mmproj_path: String::new(),
+            environment: String::new(),
         }
     }
+}
+
+/// Parse a space-separated list of KEY=VALUE pairs into environment variable
+/// pairs. Tokens without a non-empty key part are ignored.
+pub fn parse_env_pairs(s: &str) -> Vec<(String, String)> {
+    s.split_whitespace()
+        .filter_map(|tok| {
+            let (k, v) = tok.split_once('=')?;
+            if k.is_empty() || k.contains('-') {
+                return None;
+            }
+            Some((k.to_string(), v.to_string()))
+        })
+        .collect()
 }
 
 impl ProviderConfig {
@@ -335,4 +352,27 @@ pub trait ModelDownloader: Send + Sync {
         query: &str,
     ) -> impl std::future::Future<Output = Result<Vec<DownloadableModel>>> + Send;
     fn download(&self, model_id: &str, dest_dir: &str) -> Result<ModelInfo>;
+}
+
+#[cfg(test)]
+mod env_tests {
+    use super::parse_env_pairs;
+
+    #[test]
+    fn parses_pairs() {
+        let pairs = parse_env_pairs("CUDA_VISIBLE_DEVICES=0 VLLM_LOGGING_LEVEL=DEBUG bad nakey FOO=");
+        assert_eq!(
+            pairs,
+            vec![
+                ("CUDA_VISIBLE_DEVICES".to_string(), "0".to_string()),
+                ("VLLM_LOGGING_LEVEL".to_string(), "DEBUG".to_string()),
+                ("FOO".to_string(), "".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn empty_input_yields_nothing() {
+        assert!(parse_env_pairs("").is_empty());
+    }
 }
